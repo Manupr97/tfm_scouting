@@ -81,6 +81,22 @@ TEMPLATES = {
   },
 }
 
+# === Auto-prefill cuando se viene desde "Evaluar" (página 2) ===
+if (not editing) and st.session_state.get("prefill_from_lineups") and not st.session_state.get("__prefill_done"):
+    pre_url = st.session_state.get("prefill_url")
+    if pre_url:
+        # 1) Traer bio + trayectoria (sin mostrar botones en UI)
+        from utils.scraping import scrape_player_full, sync_player_to_db
+        data = scrape_player_full(pre_url, debug=True)            # bio + career a memoria
+        st.session_state["_bio_prefill"]    = data.get("bio", {})
+        st.session_state["_career_prefill"] = data.get("career", [])
+
+        # 2) Persistir en BBDD (jugador + trayectoria) para tener perfil listo
+        pid = sync_player_to_db(db, pre_url, debug=True)
+        st.session_state["_last_synced_pid"] = pid
+
+    st.session_state["__prefill_done"] = True
+
 # --- Prefill en session_state cuando venimos a editar ---
 def _set_if_missing(k, v):
     if k not in st.session_state:
@@ -152,6 +168,17 @@ default_birthdate  = player_prefill.get("birthdate", "")
 default_height     = player_prefill.get("height_cm") or 0.0
 default_weight     = player_prefill.get("weight_kg") or 0.0
 default_source_url = player_prefill.get("source_url", "")
+
+# --- Prefill ligero si venimos de 2_Scouting_Partidos ---
+if not default_name and st.session_state.get("prefill_name"):
+    default_name = st.session_state.get("prefill_name") or default_name
+if not default_team and st.session_state.get("prefill_team"):
+    default_team = st.session_state.get("prefill_team") or default_team
+if not default_position and st.session_state.get("prefill_pos"):
+    default_position = st.session_state.get("prefill_pos") or default_position
+if not default_source_url and st.session_state.get("prefill_url"):
+    default_source_url = st.session_state.get("prefill_url") or default_source_url
+# No tocamos _bio_prefill aquí; el usuario puede pulsar "Autocompletar bio" si quiere
 
 # Contexto del informe
 default_season     = (report.get("season") if editing else "25/26") or "25/26"
@@ -245,19 +272,6 @@ def scrape_besoccer_player(url: str) -> dict:
         st.warning(f"No se pudo obtener bio desde BeSoccer: {e}")
         return {"source_url": url}
 
-def _clamp_float(v, default=0.0, lo=0.0, hi=1e9):
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        x = default
-    if x != x:  # NaN
-        x = default
-    if x < lo:
-        x = default
-    if x > hi:
-        x = hi
-    return x
-
 # === UI ===
 st.title("📊 Informes de jugadores")
 
@@ -265,55 +279,54 @@ tab_new, tab_search = st.tabs(["Nuevo informe", "Buscar/Editar"])
 
 with tab_new:
     st.subheader("Identificación del jugador")
+    bio_prefill = st.session_state.get("_bio_prefill", {})
+    SS = st.session_state
+
+    # Identificación del jugador
     c1, c2 = st.columns([2,1])
     with c1:
-        name     = st.text_input("Nombre",   default_name)
-        team     = st.text_input("Equipo",   default_team)
-        position = st.text_input("Posición", default_position)
+        name     = st.text_input("Nombre",   SS.get("prefill_name",   default_name))
+        team     = st.text_input("Equipo",   SS.get("prefill_team",   default_team))
+        position = st.text_input("Posición", SS.get("prefill_pos",    default_position))
     with c2:
-        url = st.text_input("URL BeSoccer (opcional)")
-        c2a, c2b = st.columns(2)
-        with c2a:
-            if st.button("Autocompletar bio"):
-                if url:
-                    data = scrape_player_full(url, debug=True)  # <-- debug
-                    bio = data["bio"]
-                    # guarda en sesión para rellenar widgets
-                    st.session_state["_bio_prefill"] = bio
-                    st.session_state["_career_prefill"] = data["career"]
-                    st.success("Bio obtenida. Revisa los campos.")
-        with c2b:
-            if st.button("Guardar bio+trayectoria en BBDD"):
-                if url:
-                    pid_synced = sync_player_to_db(db, url, debug=True)  # <-- debug
-                    st.session_state["_last_synced_pid"] = pid_synced
-                    st.success(f"Sincronizado (player_id={pid_synced}).")
+        url = st.text_input("URL BeSoccer (opcional)", SS.get("prefill_url", ""))
 
-    bio_prefill = st.session_state.get("_bio_prefill", {})
+    # Fila extra con foto (opcional, solo mostrar)
+    if SS.get("prefill_photo"):
+        st.image(SS["prefill_photo"], caption="Foto (BeSoccer)", width=120)
+
     c3, c4, c5, c6 = st.columns(4)
     with c3:
-        nationality = st.text_input("Nacionalidad", bio_prefill.get("nationality", default_nationality))
+        nationality = st.text_input("Nacionalidad", SS.get("prefill_nationality", default_nationality))
     with c4:
-        birthdate = st.text_input("Fecha nacimiento (YYYY-MM-DD)", bio_prefill.get("birthdate", default_birthdate))
+        birthdate = st.text_input("Fecha nacimiento (YYYY-MM-DD)", SS.get("prefill_birthdate", default_birthdate))
     with c5:
-        pref_h = bio_prefill.get("height_cm")
-        height_cm = st.number_input("Altura (cm)", value=float(max(0.0, pref_h or 0.0)), step=1.0, min_value=0.0)
+        height_cm = st.number_input("Altura (cm)", value=float(max(0.0, (SS.get("prefill_height_cm") or default_height or 0.0))), step=1.0, min_value=0.0)
     with c6:
-        pref_w = bio_prefill.get("weight_kg")
-        weight_kg = st.number_input("Peso (kg)", value=float(max(0.0, pref_w or 0.0)), step=1.0, min_value=0.0)
+        weight_kg = st.number_input("Peso (kg)", value=float(max(0.0, (SS.get("prefill_weight_kg") or default_weight or 0.0))), step=1.0, min_value=0.0)
+
+    # NUEVA fila: pie, dorsal, valor y ELO
+    c7a, c7b, c7c, c7d = st.columns(4)
+    with c7a:
+        foot = st.text_input("Pie preferido", SS.get("prefill_foot", ""))
+    with c7b:
+        shirt_number = st.number_input("Dorsal", min_value=0, max_value=99, value=int(SS.get("prefill_shirt_number") or 0), step=1)
+    with c7c:
+        value_keur = st.number_input("Valor (K€)", min_value=0, value=int(SS.get("prefill_value_keur") or 0), step=50)
+    with c7d:
+        elo = st.number_input("ELO", min_value=0, max_value=999, value=int(SS.get("prefill_elo") or 0), step=1)
 
     st.markdown("---")
     st.subheader("Contexto del informe")
     c7, c8, c9, c10 = st.columns(4)
     with c7:
-        season = st.text_input("Temporada", default_season)
+        season = st.text_input("Temporada", SS.get("prefill_season", default_season))
     with c8:
-        match_date = st.date_input("Fecha del partido", value=default_match_date)
+        match_date = st.date_input("Fecha del partido", value=SS.get("prefill_match_date", default_match_date))
     with c9:
-        opponent = st.text_input("Rival", default_opponent)
+        opponent = st.text_input("Rival", SS.get("prefill_opponent", default_opponent))
     with c10:
-        minutes_observed = st.number_input("Minutos observados", min_value=0, max_value=120,
-                                        value=int(default_minutes), step=5)
+        minutes_observed = st.number_input("Minutos observados", min_value=0, max_value=120, value=int(default_minutes), step=5)
 
     st.markdown("---")
     st.subheader("Valoración por categorías")
@@ -373,26 +386,90 @@ with tab_new:
     bio_prefill = st.session_state.get("_bio_prefill", {})
 
     if st.button("💾 Guardar informe", type="primary"):
-        # 1) jugador / upsert
+        # 1) Normaliza números (evita min_value y NaN)
+        height_val = float(height_cm or 0) or None
+        weight_val = float(weight_kg or 0) or None
+
+        # 1.1) Si venimos de "Evaluar", intenta reutilizar el player_id sincronizado
+        pid_hint = st.session_state.get("_last_synced_pid")
+
+        if pid_hint:
+            # A: ya tenemos un jugador sincronizado (con su trayectoria)
+            pid = int(pid_hint)
+            # (Opcional) si tu DatabaseManager tiene un método para actualizar campos sueltos, úsalo aquí.
+            # Si no, no pasa nada: lo importante es NO crear un jugador nuevo.
+        else:
+            # B: no hay pista -> upsert SIN usar team en la clave para matchear el mismo jugador
+            pid = db.upsert_scouted_player(
+                name=name.strip(),
+                team=None,  # <- CLAVE: NO usar team para la clave de matching
+                position=(position or "").strip() or None,
+                nationality=(nationality or "").strip() or None,
+                birthdate=(birthdate or "").strip() or None,
+                age=None,
+                height_cm=height_val,
+                weight_kg=weight_val,
+                foot=(st.session_state.get("prefill_foot") or None),
+                photo_url=(st.session_state.get("prefill_photo") or None),
+                source_url=(url or st.session_state.get("prefill_url") or None),
+            )
+
+        # 2) Jugador -> upsert (si existe lo actualiza; SIEMPRE devuelve id)
         pid = db.upsert_scouted_player(
-            name=name.strip(), team=team.strip() or None, position=position.strip() or None,
-            nationality=nationality.strip() or None, birthdate=birthdate.strip() or None,
-            age=None, height_cm=height_cm or None, weight_kg=weight_kg or None,
-            foot=None, photo_url=None, source_url=url or None
+            name=name.strip(),
+            team=(team or "").strip() or None,
+            position=(position or "").strip() or None,
+            nationality=(nationality or "").strip() or None,
+            birthdate=(birthdate or "").strip() or None,
+            age=None,
+            height_cm=height_val,
+            weight_kg=weight_val,
+            foot=(st.session_state.get("prefill_foot") or None),
+            photo_url=(st.session_state.get("prefill_photo") or None),
+            source_url=(url or st.session_state.get("prefill_url") or None),
         )
-        # 2) informe (¡SOLO UNA VEZ!)
+
+        # 3) Informe (si edito -> update; si no -> create)
         context = {"template": template_name}
-        links = [l.strip() for l in links_raw.split(",") if l.strip()]
-        rid = db.create_report(
-            player_id=pid, user=user, season=season.strip(),
-            match_date=str(match_date) if match_date else None,
-            opponent=opponent.strip() or None, minutes_observed=int(minutes_observed),
-            context=context, ratings=ratings, traits=[t.strip() for t in traits if t],
-            notes=notes.strip() or None, recommendation=recommendation, confidence=int(confidence),
-            links=links
-        )
-        # 3) adjuntos
-        for f in files or []:
+        links = [l.strip() for l in (links_raw or "").split(",") if l.strip()]
+
+        if editing:
+            rid = int(report_id)  # reutilizamos el mismo ID
+            db.update_report(
+                rid,
+                player_id=pid,
+                user=user,
+                season=season.strip(),
+                match_date=str(match_date) if match_date else None,
+                opponent=(opponent or "").strip() or None,
+                minutes_observed=int(minutes_observed),
+                context=context,
+                ratings=ratings,
+                traits=[t.strip() for t in (traits or []) if t],
+                notes=(notes or "").strip() or None,
+                recommendation=recommendation,
+                confidence=int(confidence),
+                links=links,
+            )
+        else:
+            rid = db.create_report(
+                player_id=pid,
+                user=user,
+                season=season.strip(),
+                match_date=str(match_date) if match_date else None,
+                opponent=(opponent or "").strip() or None,
+                minutes_observed=int(minutes_observed),
+                context=context,
+                ratings=ratings,
+                traits=[t.strip() for t in (traits or []) if t],
+                notes=(notes or "").strip() or None,
+                recommendation=recommendation,
+                confidence=int(confidence),
+                links=links,
+            )
+
+        # 4) Adjuntos
+        for f in (files or []):
             fname = f"{slug(name)}_{slug(str(match_date))}_{slug(f.name)}"
             save_path = os.path.join(upload_dir, fname)
             with open(save_path, "wb") as out:
@@ -403,9 +480,9 @@ with tab_new:
                 label=f.name
             )
 
-        # Señal para mostrar el botón fuera del bloque
-        st.session_state["last_saved_pid"] = int(pid)
-        st.session_state["last_saved_rid"] = int(rid)
+        # 5) Estado para botón "Ver perfil" (se usa fuera del if)
+        st.session_state["last_saved_pid"] = pid
+        st.session_state["last_saved_rid"] = rid
         st.success(f"Informe guardado (jugador #{pid}, informe #{rid}).")
 
     # Botón persistente (fuera del if de guardado)

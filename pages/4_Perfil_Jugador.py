@@ -80,13 +80,60 @@ with c1:
     if not img_shown:
         st.image(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Escudo CAC.png"),
                  use_container_width=True)
+        
+def _calc_age(iso_date: str|None) -> str:
+    if not iso_date:
+        return "-"
+    try:
+        from datetime import date, datetime
+        d = datetime.fromisoformat(iso_date).date()
+        today = date.today()
+        return str(today.year - d.year - ((today.month, today.day) < (d.month, d.day)))
+    except Exception:
+        return "-"
+
+age_txt = _calc_age(p.get("birthdate"))
 
 with c2:
     st.markdown(f"## {p['name']}")
-    bio_cols = st.columns(3)
+
+    # Helpers locales
+    from datetime import date, datetime
+
+    def calc_age_from_birthdate(birth: str | None) -> str:
+        if not birth:
+            # fallback a edad guardada si existe
+            return str(p.get("age")) if p.get("age") is not None else "—"
+        try:
+            d = datetime.strptime(birth, "%Y-%m-%d").date()
+            today = date.today()
+            years = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+            return str(years)
+        except Exception:
+            return str(p.get("age")) if p.get("age") is not None else "—"
+
+    def fmt_value_keur(v) -> str:
+        # v es miles de euros (K€)
+        if isinstance(v, (int, float)) and v > 0:
+            if v >= 1000:
+                # Mostrar en millones con dos decimales
+                return f"{(v/1000):.2f} M€"
+            # Miles con separador (opcional: coma->punto)
+            return f"{int(v):,} K€".replace(",", ".")
+        return "—"
+
+    age_txt = calc_age_from_birthdate(p.get("birthdate"))
+
+    bio_cols = st.columns(4)
     bio_cols[0].markdown(f"**Equipo**: {p.get('team','-')}\n\n**Posición**: {p.get('position','-')}")
-    bio_cols[1].markdown(f"**Edad**: {_age_from_birthdate(p.get('birthdate'))}\n\n**Altura**: {p.get('height_cm','-')} cm")
+    bio_cols[1].markdown(f"**Edad**: {age_txt}\n\n**Altura**: {p.get('height_cm','-')} cm")
     bio_cols[2].markdown(f"**Peso**: {p.get('weight_kg','-')} kg\n\n**Pie**: {p.get('foot','-')}")
+    bio_cols[3].markdown(
+        f"**Dorsal**: {p.get('shirt_number','-')}\n\n"
+        f"**Valor**: {fmt_value_keur(p.get('value_keur'))}\n\n"
+        f"**ELO**: {p.get('elo','-')}"
+    )
+
     if p.get("source_url"):
         st.caption(f"Fuente: BeSoccer | {p['source_url']}")
 

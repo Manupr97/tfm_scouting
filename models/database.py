@@ -76,6 +76,19 @@ class DatabaseManager:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             """)
+            # --- columnas nuevas en scouted_players (idempotentes) ---
+            try:
+                cur.execute("ALTER TABLE scouted_players ADD COLUMN shirt_number INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE scouted_players ADD COLUMN value_keur INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE scouted_players ADD COLUMN elo INTEGER")
+            except sqlite3.OperationalError:
+                pass
             cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS ux_scouted_players
             ON scouted_players(name, birthdate, team);
@@ -140,41 +153,47 @@ class DatabaseManager:
 
     # === Jugadores observados ===
     def upsert_scouted_player(self, *, name: str, team: str|None=None, position: str|None=None,
-                            nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
-                            height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
-                            photo_url: str|None=None, source_url: str|None=None) -> int:
-        team = team or ''
-        birthdate = birthdate or ''
+                          nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
+                          height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
+                          photo_url: str|None=None, source_url: str|None=None,
+                          shirt_number: int|None=None, value_keur: int|None=None, elo: int|None=None) -> int:
         with self._lock, self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
                 SELECT id FROM scouted_players
-                WHERE name = ? AND birthdate = ? AND team = ?
+                WHERE name = ? AND COALESCE(birthdate,'') = COALESCE(?, '')
+                AND COALESCE(team,'') = COALESCE(?, '')
             """, (name, birthdate, team))
             row = cur.fetchone()
             if row:
                 pid = int(row["id"])
                 cur.execute("""
                     UPDATE scouted_players
-                    SET position=COALESCE(?, position),
-                        nationality=COALESCE(?, nationality),
-                        age=COALESCE(?, age),
-                        height_cm=COALESCE(?, height_cm),
-                        weight_kg=COALESCE(?, weight_kg),
-                        foot=COALESCE(?, foot),
-                        photo_url=COALESCE(?, photo_url),
-                        source_url=COALESCE(?, source_url),
-                        updated_at = datetime('now')
+                    SET position    = COALESCE(?, position),
+                        nationality = COALESCE(?, nationality),
+                        age         = COALESCE(?, age),
+                        height_cm   = COALESCE(?, height_cm),
+                        weight_kg   = COALESCE(?, weight_kg),
+                        foot        = COALESCE(?, foot),
+                        photo_url   = COALESCE(?, photo_url),
+                        source_url  = COALESCE(?, source_url),
+                        shirt_number= COALESCE(?, shirt_number),
+                        value_keur  = COALESCE(?, value_keur),
+                        elo         = COALESCE(?, elo),
+                        updated_at  = datetime('now')
                     WHERE id = ?
-                """, (position, nationality, age, height_cm, weight_kg, foot, photo_url, source_url, pid))
+                """, (position, nationality, age, height_cm, weight_kg, foot,
+                    photo_url, source_url, shirt_number, value_keur, elo, pid))
                 conn.commit()
                 return pid
             else:
                 cur.execute("""
                     INSERT INTO scouted_players
-                        (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot, photo_url, source_url)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot, photo_url, source_url))
+                        (name, team, position, nationality, birthdate, age, height_cm, weight_kg,
+                        foot, photo_url, source_url, shirt_number, value_keur, elo)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg,
+                    foot, photo_url, source_url, shirt_number, value_keur, elo))
                 conn.commit()
                 return int(cur.lastrowid)
 

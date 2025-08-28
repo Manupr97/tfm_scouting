@@ -160,7 +160,7 @@ def parse_basic_profile(soup: BeautifulSoup, debug: bool=False) -> Dict:
         big = _text(stat.select_one(".big-row"))
         small = _text(stat.select_one(".small-row"))
         # nacionalidad (aparece como pequeño texto bajo la bandera)
-        if small and small.lower() in ("españa","argentina","francia","italia","alemania","portugal") and big:
+        if small and small.lower() in ("españa","argentina","francia","italia","alemania","portugal", "croacia", "inglaterra") and big:
             bio["nationality"] = small
         # edad / kgs / cms
         if small.lower() == "años":
@@ -173,6 +173,35 @@ def parse_basic_profile(soup: BeautifulSoup, debug: bool=False) -> Dict:
         abbr = stat.select_one(".round-row.bg-role span")
         if abbr:
             bio["position"] = _text(abbr)
+
+        smalls = [(_text(s) or "").strip() for s in stat.select(".small-row")]
+        smalls_lower = [s.lower() for s in smalls]
+        
+        if ("m.€" in smalls_lower or "k.€" in smalls_lower) and big:
+            try:
+                val = float(big.replace(",", "."))
+                if "m.€" in smalls_lower:
+                    bio["value_keur"] = int(round(val * 1000))
+                else:
+                    bio["value_keur"] = int(round(val))
+            except Exception:
+                pass
+
+        # ELO -> número dentro de .round-row span
+        if any(s.upper() == "ELO" for s in smalls):
+            sp = stat.select_one(".round-row span")
+            if sp:
+                elo_txt = sp.get_text(strip=True)
+                if elo_txt.isdigit():
+                    bio["elo"] = int(elo_txt)
+
+        # Dorsal -> número dentro de .round-row span
+        if "dorsal" in smalls_lower:
+            sp = stat.select_one(".round-row span")
+            if sp:
+                d_txt = sp.get_text(strip=True)
+                if d_txt.isdigit():
+                    bio["shirt_number"] = int(d_txt)
 
     # Fallback nacionalidad por bandera (alt='es', 'fr'...)
     if not bio.get("nationality"):
@@ -325,6 +354,9 @@ def sync_player_to_db(db, url: str, debug: bool=False) -> int:
         foot=bio.get("foot"),
         photo_url=bio.get("photo_url"),
         source_url=url,
+        shirt_number=bio.get("shirt_number"),   # si lo recolectas en algún flujo
+        value_keur=bio.get("value_keur"),
+        elo=bio.get("elo"),
     )
 
     # trayectoria
