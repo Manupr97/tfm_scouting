@@ -329,8 +329,12 @@ def scrape_player_full(url: str, debug: bool=False) -> Dict:
     career = parse_career_table(soup, debug=debug)
     return {"bio": bio, "career": career}
 
-def sync_player_to_db(db, url: str, debug: bool=False) -> int:
-    """Scrapea BeSoccer y guarda bio + trayectoria. Devuelve player_id."""
+def sync_player_to_db(db, url: str, player_id: int = None, debug: bool=False) -> int:
+    """
+    Scrapea BeSoccer y guarda bio + trayectoria. 
+    Si player_id se pasa, actualiza ese registro específico.
+    Devuelve player_id.
+    """
     data = scrape_player_full(url, debug=debug)
     bio = data["bio"]
     if debug: 
@@ -339,25 +343,47 @@ def sync_player_to_db(db, url: str, debug: bool=False) -> int:
     name = _sanitize_player_name(bio.get("name"))
     if not name:
         print("[SCRAPER] Nombre inválido detectado; abortando upsert.")
-        return None  # no crear jugador erróneo
+        return None
+
     bio["name"] = name
 
-    pid = db.upsert_scouted_player(
-        name=name.strip(),
-        team=None,
-        position=bio.get("position"),
-        nationality=bio.get("nationality"),
-        birthdate=bio.get("birthdate"),
-        age=bio.get("age"),
-        height_cm=bio.get("height_cm"),
-        weight_kg=bio.get("weight_kg"),
-        foot=bio.get("foot"),
-        photo_url=bio.get("photo_url"),
-        source_url=url,
-        shirt_number=bio.get("shirt_number"),   # si lo recolectas en algún flujo
-        value_keur=bio.get("value_keur"),
-        elo=bio.get("elo"),
-    )
+    if player_id:
+        # Actualizar jugador específico
+        db.sync_player_with_id(
+            player_id,
+            name=name.strip(),
+            position=bio.get("position"),
+            nationality=bio.get("nationality"),
+            birthdate=bio.get("birthdate"),
+            age=bio.get("age"),
+            height_cm=bio.get("height_cm"),
+            weight_kg=bio.get("weight_kg"),
+            foot=bio.get("foot"),
+            photo_url=bio.get("photo_url"),
+            source_url=url,
+            shirt_number=bio.get("shirt_number"),
+            value_keur=bio.get("value_keur"),
+            elo=bio.get("elo"),
+        )
+        pid = player_id
+    else:
+        # Buscar/crear jugador (sin team para evitar duplicados)
+        pid = db.upsert_scouted_player(
+            name=name.strip(),
+            team=None,
+            position=bio.get("position"),
+            nationality=bio.get("nationality"),
+            birthdate=bio.get("birthdate"),
+            age=bio.get("age"),
+            height_cm=bio.get("height_cm"),
+            weight_kg=bio.get("weight_kg"),
+            foot=bio.get("foot"),
+            photo_url=bio.get("photo_url"),
+            source_url=url,
+            shirt_number=bio.get("shirt_number"),
+            value_keur=bio.get("value_keur"),
+            elo=bio.get("elo"),
+        )
 
     # trayectoria
     for row in data["career"]:

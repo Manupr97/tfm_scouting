@@ -237,13 +237,14 @@ with tab4:
                 try:
                     from utils.scraping import sync_player_to_db
                     with st.spinner("Actualizando datos..."):
-                        pid = sync_player_to_db(db, url, debug=True)
+                        # Pasar el player_id actual para actualizar el mismo registro
+                        pid = sync_player_to_db(db, url, player_id=player_id, debug=True)
                     
                     if pid == player_id:
                         st.success("Datos actualizados correctamente.")
                         st.rerun()  # Recargar la página para mostrar datos actualizados
                     else:
-                        st.warning(f"Se ha creado/actualizado otro jugador (ID: {pid})")
+                        st.warning(f"Advertencia: se actualizó otro jugador (ID: {pid})")
                 except Exception as e:
                     st.error(f"Error al actualizar datos: {str(e)}")
     

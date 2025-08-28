@@ -153,23 +153,55 @@ class DatabaseManager:
 
     # === Jugadores observados ===
     def upsert_scouted_player(self, *, name: str, team: str|None=None, position: str|None=None,
-                          nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
-                          height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
-                          photo_url: str|None=None, source_url: str|None=None,
-                          shirt_number: int|None=None, value_keur: int|None=None, elo: int|None=None) -> int:
+                      nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
+                      height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
+                      photo_url: str|None=None, source_url: str|None=None,
+                      shirt_number: int|None=None, value_keur: int|None=None, elo: int|None=None) -> int:
         with self._lock, self._connect() as conn:
             cur = conn.cursor()
+            
+            # 1. Buscar primero por source_url (más confiable)
+            if source_url:
+                cur.execute("SELECT id FROM scouted_players WHERE source_url = ?", (source_url,))
+                row = cur.fetchone()
+                if row:
+                    pid = int(row["id"])
+                    # Actualizar datos existentes (sin sobrescribir con None/vacío)
+                    cur.execute("""
+                        UPDATE scouted_players
+                        SET team        = COALESCE(NULLIF(?, ''), team),
+                            position    = COALESCE(?, position),
+                            nationality = COALESCE(?, nationality),
+                            birthdate   = COALESCE(NULLIF(?, ''), birthdate),
+                            age         = COALESCE(?, age),
+                            height_cm   = COALESCE(?, height_cm),
+                            weight_kg   = COALESCE(?, weight_kg),
+                            foot        = COALESCE(?, foot),
+                            photo_url   = COALESCE(?, photo_url),
+                            shirt_number= COALESCE(?, shirt_number),
+                            value_keur  = COALESCE(?, value_keur),
+                            elo         = COALESCE(?, elo),
+                            updated_at  = datetime('now')
+                        WHERE id = ?
+                    """, (team, position, nationality, birthdate, age, height_cm, weight_kg, foot,
+                        photo_url, shirt_number, value_keur, elo, pid))
+                    conn.commit()
+                    return pid
+            
+            # 2. Buscar por nombre + fecha (sin equipo en la clave)
             cur.execute("""
                 SELECT id FROM scouted_players
                 WHERE name = ? AND COALESCE(birthdate,'') = COALESCE(?, '')
-                AND COALESCE(team,'') = COALESCE(?, '')
-            """, (name, birthdate, team))
+            """, (name, birthdate))
             row = cur.fetchone()
+            
             if row:
                 pid = int(row["id"])
+                # Actualizar registro existente
                 cur.execute("""
                     UPDATE scouted_players
-                    SET position    = COALESCE(?, position),
+                    SET team        = COALESCE(NULLIF(?, ''), team),
+                        position    = COALESCE(?, position),
                         nationality = COALESCE(?, nationality),
                         age         = COALESCE(?, age),
                         height_cm   = COALESCE(?, height_cm),
@@ -182,11 +214,12 @@ class DatabaseManager:
                         elo         = COALESCE(?, elo),
                         updated_at  = datetime('now')
                     WHERE id = ?
-                """, (position, nationality, age, height_cm, weight_kg, foot,
+                """, (team, position, nationality, age, height_cm, weight_kg, foot,
                     photo_url, source_url, shirt_number, value_keur, elo, pid))
                 conn.commit()
                 return pid
             else:
+                # 3. Crear nuevo registro
                 cur.execute("""
                     INSERT INTO scouted_players
                         (name, team, position, nationality, birthdate, age, height_cm, weight_kg,
@@ -196,6 +229,36 @@ class DatabaseManager:
                     foot, photo_url, source_url, shirt_number, value_keur, elo))
                 conn.commit()
                 return int(cur.lastrowid)
+
+    def sync_player_with_id(self, player_id: int, *, name: str=None, team: str=None, position: str=None,
+                       nationality: str=None, birthdate: str=None, age: int=None,
+                       height_cm: float=None, weight_kg: float=None, foot: str=None,
+                       photo_url: str=None, source_url: str=None,
+                       shirt_number: int=None, value_keur: int=None, elo: int=None) -> None:
+        """Actualiza un jugador existente por ID específico."""
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE scouted_players
+                SET name        = COALESCE(?, name),
+                    team        = COALESCE(NULLIF(?, ''), team),
+                    position    = COALESCE(?, position),
+                    nationality = COALESCE(?, nationality),
+                    birthdate   = COALESCE(NULLIF(?, ''), birthdate),
+                    age         = COALESCE(?, age),
+                    height_cm   = COALESCE(?, height_cm),
+                    weight_kg   = COALESCE(?, weight_kg),
+                    foot        = COALESCE(?, foot),
+                    photo_url   = COALESCE(?, photo_url),
+                    source_url  = COALESCE(?, source_url),
+                    shirt_number= COALESCE(?, shirt_number),
+                    value_keur  = COALESCE(?, value_keur),
+                    elo         = COALESCE(?, elo),
+                    updated_at  = datetime('now')
+                WHERE id = ?
+            """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot,
+                photo_url, source_url, shirt_number, value_keur, elo, player_id))
+            conn.commit()
 
     def get_player(self, player_id: int) -> dict|None:
         with self._lock, self._connect() as conn:

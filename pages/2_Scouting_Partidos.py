@@ -159,7 +159,9 @@ def _bloque_equipo(box: dict, rival_name: str):
                             bio_data = data.get("bio", {}) or {}
                             # 2) (Opcional pero recomendable) Persistir en BBDD para tener foto/trayectoria ya guardada
                             try:
-                                sync_player_to_db(db, url, debug=True)
+                                if url:
+                                    # NO pasar player_id para que use la lógica de upsert normal
+                                    sync_player_to_db(db, url, player_id=None, debug=True)
                             except Exception as e:
                                 print("[EVAL] sync_player_to_db falló:", e)
                     except Exception as e:
@@ -215,7 +217,9 @@ def _bloque_equipo(box: dict, rival_name: str):
                             bio_data = data.get("bio", {}) or {}
                             # 2) (Opcional pero recomendable) Persistir en BBDD para tener foto/trayectoria ya guardada
                             try:
-                                sync_player_to_db(db, url, debug=True)
+                                if url:
+                                    # NO pasar player_id para que use la lógica de upsert normal
+                                    sync_player_to_db(db, url, player_id=None, debug=True)
                             except Exception as e:
                                 print("[EVAL] sync_player_to_db falló:", e)
                     except Exception as e:

@@ -390,31 +390,7 @@ with tab_new:
         height_val = float(height_cm or 0) or None
         weight_val = float(weight_kg or 0) or None
 
-        # 1.1) Si venimos de "Evaluar", intenta reutilizar el player_id sincronizado
-        pid_hint = st.session_state.get("_last_synced_pid")
-
-        if pid_hint:
-            # A: ya tenemos un jugador sincronizado (con su trayectoria)
-            pid = int(pid_hint)
-            # (Opcional) si tu DatabaseManager tiene un método para actualizar campos sueltos, úsalo aquí.
-            # Si no, no pasa nada: lo importante es NO crear un jugador nuevo.
-        else:
-            # B: no hay pista -> upsert SIN usar team en la clave para matchear el mismo jugador
-            pid = db.upsert_scouted_player(
-                name=name.strip(),
-                team=None,  # <- CLAVE: NO usar team para la clave de matching
-                position=(position or "").strip() or None,
-                nationality=(nationality or "").strip() or None,
-                birthdate=(birthdate or "").strip() or None,
-                age=None,
-                height_cm=height_val,
-                weight_kg=weight_val,
-                foot=(st.session_state.get("prefill_foot") or None),
-                photo_url=(st.session_state.get("prefill_photo") or None),
-                source_url=(url or st.session_state.get("prefill_url") or None),
-            )
-
-        # 2) Jugador -> upsert (si existe lo actualiza; SIEMPRE devuelve id)
+        # 2) UNA SOLA llamada a upsert (evita duplicados)
         pid = db.upsert_scouted_player(
             name=name.strip(),
             team=(team or "").strip() or None,
@@ -424,9 +400,12 @@ with tab_new:
             age=None,
             height_cm=height_val,
             weight_kg=weight_val,
-            foot=(st.session_state.get("prefill_foot") or None),
-            photo_url=(st.session_state.get("prefill_photo") or None),
-            source_url=(url or st.session_state.get("prefill_url") or None),
+            foot=(foot or "").strip() or None,
+            photo_url=st.session_state.get("prefill_photo"),
+            source_url=(url or st.session_state.get("prefill_url") or "").strip() or None,
+            shirt_number=int(shirt_number) if shirt_number else None,
+            value_keur=int(value_keur) if value_keur else None,
+            elo=int(elo) if elo else None,
         )
 
         # 3) Informe (si edito -> update; si no -> create)
@@ -480,7 +459,7 @@ with tab_new:
                 label=f.name
             )
 
-        # 5) Estado para botón "Ver perfil" (se usa fuera del if)
+        # 5) Estado para botón "Ver perfil"
         st.session_state["last_saved_pid"] = pid
         st.session_state["last_saved_rid"] = rid
         st.success(f"Informe guardado (jugador #{pid}, informe #{rid}).")
