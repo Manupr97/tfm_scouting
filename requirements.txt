@@ -1,0 +1,15 @@
+streamlit>=1.33.0
+pandas>=2.1
+numpy>=1.24
+matplotlib>=3.7
+mplsoccer>=1.1.9
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=4.9
+Pillow>=10.0
+plotly>=5.20
+scipy>=1.10
+
+# --- Opcionales/útiles ---
+# streamlit-tags        # si quieres un widget de tags más cómodo
+# python-dotenv         # si usaras variables de entorno (.env)
