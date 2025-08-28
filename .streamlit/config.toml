@@ -1,0 +1,16 @@
+## Streamlit configuration file
+
+## This file customizes the visual theme of the application.  Since the
+## version of Streamlit installed in your environment does not support
+## passing a ``theme`` parameter to ``st.set_page_config``, defining
+## these options in ``config.toml`` is the recommended way to adjust
+## colors and widget appearance.  See the official docs for more
+## details: https://docs.streamlit.io/develop/concepts/configuration
+
+[theme]
+base = "dark"
+primaryColor = "#ffffff"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#222222"
+textColor = "#ffffff"
+font = "sans serif"

@@ -1,457 +1,437 @@
-"""
-database.py
-===============
-
-This module defines a simple database layer for the web scouting application.
-
-The goal is to encapsulate all SQLite operations behind a small API.  The
-``DatabaseManager`` class opens a connection to a SQLite database file,
-creates the necessary tables if they do not already exist and exposes
-functions for importing player catalogues from Excel and for inserting
-scouting reports.
-
-Two primary data sources exist in this project:
-
-* A **catalogue** of players scraped from Wyscout and stored in one or
-  more Excel files.  These records include the player's unique ID,
-  name, team, age, position and a relative path to their headshot
-  image.  This information is considered read‑only.
-* A collection of **scouting reports** created by users of the application.
-  Reports may refer to players in the catalogue, but can also refer to
-  completely new players.  Each report captures qualitative evaluations
-  (e.g. technical, tactical, physical and mental scores), an overall
-  recommendation and arbitrary notes.
-
-Tables
-------
-
-``players_catalogue``
-    Stores the data imported from the Excel catalogues.  Primary key is
-    ``player_id``.  Columns mirror the fields present in the Excel files.
-
-``observed_players``
-    Aggregates scouting information about players not present in the
-    catalogue.  Fields include a generated primary key, the player's
-    name, team and other optional attributes (age, height, etc.) and
-    aggregated statistics such as the number of reports and the average
-    rating.
-
-``reports``
-    Stores individual scouting reports.  Each report may reference a
-    player in the catalogue (via ``player_id``) or an observed player
-    (via ``observed_player_id``).  Reports contain evaluation scores
-    saved as JSON and additional fields such as the report date,
-    comments and a recommendation.
-
-All write operations commit their changes automatically.  When the
-``DatabaseManager`` instance is destroyed, the underlying database
-connection is closed.
-"""
-
+# database.py (versión thread-safe)
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
-
-import pandas as pd
+from typing import Dict, List, Optional
 
 
 class DatabaseManager:
-    """Encapsulates a connection to an SQLite database and provides helper
-    methods for reading and writing scouting data.
-
-    Parameters
-    ----------
-    db_path : str
-        Path to the SQLite database file.  The file will be created if it
-        does not already exist.
+    """
+    Capa de acceso a datos para usuarios y presets de filtros.
+    Abre una conexión por operación para evitar problemas de hilos en Streamlit.
     """
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
-        # Create directory for the database if necessary
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row  # convenient row access as dict
+        self._lock = threading.RLock()
         self._create_tables_if_missing()
 
-    # ------------------------------------------------------------------
-    # Table definitions
-    # ------------------------------------------------------------------
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        # Modo WAL para lecturas/escrituras concurrentes más estables
+        conn.execute("PRAGMA journal_mode=WAL;")
+        # Integridad y rendimiento razonable
+        conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
     def _create_tables_if_missing(self) -> None:
-        """Create tables on the first run if they don't already exist."""
-        cur = self.conn.cursor()
-        # Table for players from the Wyscout catalogue
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS players_catalogue (
-                player_id TEXT PRIMARY KEY,
-                nombre TEXT NOT NULL,
-                equipo TEXT,
-                posicion TEXT,
-                edad INTEGER,
-                nacionalidad TEXT,
-                liga TEXT,
-                minutos INTEGER,
-                partidos INTEGER,
-                goles INTEGER,
-                asistencias INTEGER,
-                tarjetas_amarillas INTEGER,
-                tarjetas_rojas INTEGER,
-                foto_path TEXT
-            )
-            """
-        )
-        # Table for players observed manually (not present in the catalogue)
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS observed_players (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nombre TEXT NOT NULL,
-                equipo TEXT,
-                posicion TEXT,
-                edad INTEGER,
-                nacionalidad TEXT,
-                altura REAL,
-                peso REAL,
-                liga TEXT,
-                numero_informes INTEGER DEFAULT 0,
-                nota_media REAL DEFAULT 0.0,
-                nota_max REAL DEFAULT 0.0,
-                nota_min REAL DEFAULT 0.0,
-                ultima_fecha TEXT,
-                foto_path TEXT
-            )
-            """
-        )
-        # Table for individual scouting reports
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                player_id TEXT,
-                observed_player_id INTEGER,
-                scout TEXT NOT NULL,
-                fecha TEXT NOT NULL,
-                minutos INTEGER,
-                tipo_evaluacion TEXT,
-                nota_general REAL,
-                potencial TEXT,
-                recomendacion TEXT,
-                fortalezas TEXT,
-                debilidades TEXT,
-                observaciones TEXT,
-                metricas_json TEXT NOT NULL,
-                FOREIGN KEY(player_id) REFERENCES players_catalogue(player_id),
-                FOREIGN KEY(observed_player_id) REFERENCES observed_players(id)
-            )
-            """
-        )
-        self.conn.commit()
-
-    # ------------------------------------------------------------------
-    # Catalogue import
-    # ------------------------------------------------------------------
-    def import_catalogue_from_excel(self, files: Iterable[str]) -> int:
-        """Import one or more Excel files into the ``players_catalogue`` table.
-
-        Each Excel file is expected to contain columns matching the table
-        definition.  Rows with duplicate ``player_id`` values are skipped.
-
-        Parameters
-        ----------
-        files : Iterable[str]
-            Paths to Excel files to import.
-
-        Returns
-        -------
-        int
-            Number of new records inserted.
-        """
-        cur = self.conn.cursor()
-        inserted = 0
-        for file_path in files:
-            df = pd.read_excel(file_path)
-            # Ensure expected columns exist; if not, attempt to map them
-            expected_cols = set([
-                "player_id",
-                "nombre",
-                "equipo",
-                "posicion",
-                "edad",
-                "nacionalidad",
-                "liga",
-                "minutos",
-                "partidos",
-                "goles",
-                "asistencias",
-                "tarjetas_amarillas",
-                "tarjetas_rojas",
-                "foto_path",
-            ])
-            missing = expected_cols - set(df.columns)
-            if missing:
-                raise ValueError(f"Missing columns {missing} in {file_path}")
-            # Insert rows
-            for _, row in df.iterrows():
-                # Skip if player already exists
-                cur.execute(
-                    "SELECT 1 FROM players_catalogue WHERE player_id = ?",
-                    (row["player_id"],),
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            # Tabla de usuarios
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL
                 )
-                if cur.fetchone():
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO players_catalogue (
-                        player_id, nombre, equipo, posicion, edad,
-                        nacionalidad, liga, minutos, partidos, goles,
-                        asistencias, tarjetas_amarillas, tarjetas_rojas, foto_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["player_id"],
-                        row["nombre"],
-                        row["equipo"],
-                        row["posicion"],
-                        int(row["edad"]) if not pd.isna(row["edad"]) else None,
-                        row["nacionalidad"],
-                        row["liga"],
-                        int(row["minutos"]) if not pd.isna(row["minutos"]) else None,
-                        int(row["partidos"]) if not pd.isna(row["partidos"]) else None,
-                        int(row["goles"]) if not pd.isna(row["goles"]) else None,
-                        int(row["asistencias"]) if not pd.isna(row["asistencias"]) else None,
-                        int(row["tarjetas_amarillas"]) if not pd.isna(row["tarjetas_amarillas"]) else None,
-                        int(row["tarjetas_rojas"]) if not pd.isna(row["tarjetas_rojas"]) else None,
-                        row["foto_path"],
-                    ),
+            """)
+            # Tabla de configuraciones de filtros
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS filter_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    columns_json TEXT NOT NULL,
+                    filters_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
-                inserted += 1
-        self.conn.commit()
-        return inserted
-
-    # ------------------------------------------------------------------
-    # Report insertion
-    # ------------------------------------------------------------------
-    def add_report(
-        self,
-        *,
-        scout: str,
-        metricas: Dict[str, Dict[str, float]],
-        nota_general: float,
-        potencial: str,
-        recomendacion: str,
-        fortalezas: str,
-        debilidades: str,
-        observaciones: str,
-        minutos: Optional[int] = None,
-        tipo_evaluacion: str = "Completa",
-        player_id: Optional[str] = None,
-        observed_player_id: Optional[int] = None,
-    ) -> int:
-        """Insert a new scouting report into the database.
-
-        Parameters
-        ----------
-        scout : str
-            Username or identifier of the scout creating the report.
-        metricas : Dict[str, Dict[str, float]]
-            Dictionary of evaluation metrics organised by category (technical,
-            tactical, physical, mental).  Values should be numeric scores.
-        nota_general : float
-            Overall rating assigned to the player.
-        potencial : str
-            Assessment of the player's potential (e.g. "Alto", "Medio").
-        recomendacion : str
-            Scout's recommendation (e.g. "Fichar", "Seguir observando").
-        fortalezas : str
-            Free‑text description of the player's strengths.
-        debilidades : str
-            Free‑text description of the player's weaknesses.
-        observaciones : str
-            Additional observations not captured elsewhere.
-        minutos : Optional[int], optional
-            Number of minutes observed.  May be left ``None`` if unknown.
-        tipo_evaluacion : str, optional
-            Name of the evaluation type, default "Completa".
-        player_id : Optional[str], optional
-            Reference to a player in the catalogue.  Provide this if the
-            report concerns an existing player.
-        observed_player_id : Optional[int], optional
-            Reference to a player in the ``observed_players`` table.  Use
-            when the player is not in the catalogue.  Exactly one of
-            ``player_id`` or ``observed_player_id`` should be non‑null.
-
-        Returns
-        -------
-        int
-            The ID of the newly inserted report.
-        """
-        if (player_id is None) == (observed_player_id is None):
-            raise ValueError(
-                "Exactly one of player_id or observed_player_id must be provided"
+            """)
+            # Índice/único para upsert lógico
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_filter_configs_user_name
+                ON filter_configs(user, name)
+            """)
+            conn.commit()
+            # --------- SCOUTED PLAYERS ----------
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS scouted_players (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                team TEXT DEFAULT '',
+                position TEXT,
+                nationality TEXT,
+                birthdate TEXT DEFAULT '',
+                age INTEGER,
+                height_cm REAL,
+                weight_kg REAL,
+                foot TEXT,
+                photo_url TEXT,
+                source_url TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """)
+            cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_scouted_players
+            ON scouted_players(name, birthdate, team);
+            """)
+            # ---------- SCOUT REPORTS / FILES (tal y como ya lo tenías) ----------
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS scout_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id INTEGER NOT NULL,
+                user TEXT NOT NULL,
+                season TEXT,
+                match_date TEXT,
+                opponent TEXT,
+                minutes_observed INTEGER,
+                context_json TEXT NOT NULL,
+                ratings_json TEXT NOT NULL,
+                traits_json TEXT,
+                notes TEXT,
+                recommendation TEXT,
+                confidence INTEGER,
+                links_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(player_id) REFERENCES scouted_players(id) ON DELETE CASCADE
             )
-        cur = self.conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO reports (
-                player_id,
-                observed_player_id,
-                scout,
-                fecha,
-                minutos,
-                tipo_evaluacion,
-                nota_general,
-                potencial,
-                recomendacion,
-                fortalezas,
-                debilidades,
-                observaciones,
-                metricas_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                player_id,
-                observed_player_id,
-                scout,
-                datetime.utcnow().isoformat(),
-                minutos,
-                tipo_evaluacion,
-                nota_general,
-                potencial,
-                recomendacion,
-                fortalezas,
-                debilidades,
-                observaciones,
-                json.dumps(metricas),
-            ),
-        )
-        report_id = cur.lastrowid
-        # Update aggregate stats for observed players
-        if observed_player_id is not None:
-            self._update_observed_player_aggregates(observed_player_id, nota_general)
-        self.conn.commit()
-        return report_id
+            """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS report_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                label TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY(report_id) REFERENCES scout_reports(id) ON DELETE CASCADE
+            )
+            """)
+            # ---------- PLAYER CAREER ----------
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS player_career (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            season TEXT NOT NULL,
+            club TEXT NOT NULL,
+            competition TEXT DEFAULT '',       -- usamos '' en lugar de NULL
+            pj INTEGER, goles INTEGER, asist INTEGER,
+            ta INTEGER, tr INTEGER,
+            pt INTEGER, ps INTEGER, min INTEGER,
+            edad INTEGER, pts REAL, elo INTEGER,
+            raw_json TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(player_id) REFERENCES scouted_players(id) ON DELETE CASCADE
+            );
+            """)
+            cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_player_career
+            ON player_career(player_id, season, club, competition);
+            """)
 
-    # ------------------------------------------------------------------
-    # Observed players management
-    # ------------------------------------------------------------------
-    def add_observed_player(
+    # === Helpers internos ===
+    def _json_dumps(self, obj) -> str:
+        return json.dumps(obj, ensure_ascii=False)
+
+    # === Jugadores observados ===
+    def upsert_scouted_player(self, *, name: str, team: str|None=None, position: str|None=None,
+                            nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
+                            height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
+                            photo_url: str|None=None, source_url: str|None=None) -> int:
+        team = team or ''
+        birthdate = birthdate or ''
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id FROM scouted_players
+                WHERE name = ? AND birthdate = ? AND team = ?
+            """, (name, birthdate, team))
+            row = cur.fetchone()
+            if row:
+                pid = int(row["id"])
+                cur.execute("""
+                    UPDATE scouted_players
+                    SET position=COALESCE(?, position),
+                        nationality=COALESCE(?, nationality),
+                        age=COALESCE(?, age),
+                        height_cm=COALESCE(?, height_cm),
+                        weight_kg=COALESCE(?, weight_kg),
+                        foot=COALESCE(?, foot),
+                        photo_url=COALESCE(?, photo_url),
+                        source_url=COALESCE(?, source_url),
+                        updated_at = datetime('now')
+                    WHERE id = ?
+                """, (position, nationality, age, height_cm, weight_kg, foot, photo_url, source_url, pid))
+                conn.commit()
+                return pid
+            else:
+                cur.execute("""
+                    INSERT INTO scouted_players
+                        (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot, photo_url, source_url)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot, photo_url, source_url))
+                conn.commit()
+                return int(cur.lastrowid)
+
+    def get_player(self, player_id: int) -> dict|None:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM scouted_players WHERE id = ?", (player_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def _ensure_column(self, table: str, col: str, ddl: str):
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            cols = {r["name"] for r in cur.fetchall()}
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+                conn.commit()
+
+    def set_player_photo_path(self, player_id: int, photo_path: str) -> None:
+        # crea la columna si no existe
+        self._ensure_column("scouted_players", "photo_path", "photo_path TEXT")
+        with self._connect() as conn:
+            conn.execute("UPDATE scouted_players SET photo_path = ?, updated_at = datetime('now') WHERE id = ?",
+                        (photo_path, player_id))
+            conn.commit()
+
+
+    def search_players(self, q: str, limit: int = 50) -> list[dict]:
+        pat = f"%{q}%"
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT * FROM scouted_players
+                WHERE name LIKE ? OR COALESCE(team,'') LIKE ? OR COALESCE(nationality,'') LIKE ?
+                ORDER BY updated_at DESC LIMIT ?
+            """, (pat, pat, pat, limit))
+            return [dict(r) for r in cur.fetchall()]
+        
+    def upsert_player_career(self, *, player_id:int, season:str, club:str,
+                         competition:str|None, data:dict, raw_json:str|None=None) -> None:
+        fields = ["pj","goles","asist","ta","tr","pt","ps","min","edad","pts","elo"]
+        vals = [data.get(k) for k in fields]
+        comp_norm = competition or ""  # normalizamos para buscar
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id FROM player_career
+                WHERE player_id=? AND season=? AND club=? AND COALESCE(competition,'')=?
+            """, (player_id, season, club, comp_norm))
+            row = cur.fetchone()
+            if row:
+                cur.execute(f"""
+                    UPDATE player_career
+                    SET competition=?,
+                        pj=?, goles=?, asist=?, ta=?, tr=?, pt=?, ps=?, min=?, edad=?, pts=?, elo=?,
+                        raw_json=?, updated_at=datetime('now')
+                    WHERE id=?
+                """, (competition, *vals, raw_json, row["id"]))
+            else:
+                cur.execute(f"""
+                    INSERT INTO player_career
+                        (player_id, season, club, competition,
+                        pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo, raw_json, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now'))
+                """, (player_id, season, club, competition, *vals, raw_json))
+            conn.commit()
+
+    def get_player_career(self, player_id:int, include_competitions:bool=False) -> list[dict]:
+        where = "competition = ''" if not include_competitions else "1=1"
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT season, club, competition, pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo
+                FROM player_career
+                WHERE player_id = ? AND {where}
+                ORDER BY season DESC, club ASC, COALESCE(competition,'') ASC
+            """, (player_id,))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def get_reports_for_player(self, player_id:int, limit:int=20) -> list[dict]:
+        return self.list_reports(player_id=player_id, limit=limit)
+
+    # === Informes ===
+    def create_report(self, *, player_id: int, user: str, season: str|None,
+                    match_date: str|None, opponent: str|None, minutes_observed: int|None,
+                    context: dict, ratings: dict, traits: list[str]|None,
+                    notes: str|None, recommendation: str|None, confidence: int|None,
+                    links: list[str]|None) -> int:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO scout_reports
+                    (player_id, user, season, match_date, opponent, minutes_observed,
+                    context_json, ratings_json, traits_json, notes, recommendation, confidence, links_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (player_id, user, season, match_date, opponent, minutes_observed,
+                self._json_dumps(context), self._json_dumps(ratings),
+                self._json_dumps(traits or []), notes, recommendation, confidence,
+                self._json_dumps(links or [])))
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_report(self, report_id: int, **fields) -> None:
+        # fields puede contener context, ratings, traits, notes, recommendation, confidence, links...
+        m = []
+        vals = []
+        for k, v in fields.items():
+            if k in ("context","ratings","traits","links"):
+                m.append(f"{k}_json = ?"); vals.append(self._json_dumps(v))
+            else:
+                m.append(f"{k} = ?"); vals.append(v)
+        m.append("updated_at = datetime('now')")
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"UPDATE scout_reports SET {', '.join(m)} WHERE id = ?", (*vals, report_id))
+            conn.commit()
+
+    def get_report(self, report_id: int) -> dict|None:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM scout_reports WHERE id = ?", (report_id,))
+            row = cur.fetchone()
+        if not row: return None
+        r = dict(row)
+        for k in ("context_json","ratings_json","traits_json","links_json"):
+            if k in r and r[k] is not None:
+                r[k.replace("_json","")] = json.loads(r.pop(k))
+        return r
+
+    def list_reports(self, *, user: str|None=None, player_id: int|None=None, limit: int = 100) -> list[dict]:
+        q = "SELECT * FROM scout_reports WHERE 1=1"
+        params=[]
+        if user: q += " AND user = ?"; params.append(user)
+        if player_id is not None: q += " AND player_id = ?"; params.append(player_id)
+        q += " ORDER BY created_at DESC LIMIT ?"; params.append(limit)
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(q, tuple(params))
+            rows = cur.fetchall()
+        out=[]
+        for row in rows:
+            r=dict(row)
+            for k in ("context_json","ratings_json","traits_json","links_json"):
+                if k in r and r[k] is not None:
+                    r[k.replace("_json","")] = json.loads(r.pop(k))
+            out.append(r)
+        return out
+
+    # === Adjuntos ===
+    def add_report_file(self, report_id: int, file_path: str, label: str|None=None) -> int:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO report_files (report_id, file_path, label) VALUES (?,?,?)",
+                        (report_id, file_path, label))
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def get_report_files(self, report_id: int) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM report_files WHERE report_id = ? ORDER BY created_at DESC", (report_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def list_video_links_for_player(self, player_id:int) -> list[str]:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT links_json FROM scout_reports WHERE player_id=? ORDER BY created_at DESC", (player_id,))
+            urls=set()
+            for r in cur.fetchall():
+                if r["links_json"]:
+                    try:
+                        for u in json.loads(r["links_json"]):
+                            if u: urls.add(u.strip())
+                    except Exception:
+                        pass
+        return sorted(urls)
+
+    # ------------------- Gestión de usuarios -------------------
+    def create_user(self, username: str, password_hash: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                    (username, password_hash),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def get_user_password(self, username: str) -> Optional[str]:
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
+            row = cur.fetchone()
+            return row["password_hash"] if row else None
+
+    # ----------- Gestión de configuraciones de filtros ----------
+    def save_filter_config(
         self,
-        *,
-        nombre: str,
-        equipo: Optional[str] = None,
-        posicion: Optional[str] = None,
-        edad: Optional[int] = None,
-        nacionalidad: Optional[str] = None,
-        altura: Optional[float] = None,
-        peso: Optional[float] = None,
-        liga: Optional[str] = None,
-        foto_path: Optional[str] = None,
+        user: str,
+        name: str,
+        columns: List[str],
+        filters: Dict[str, Dict[str, object]]
     ) -> int:
-        """Insert a new observed player and return its generated ID."""
-        cur = self.conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO observed_players (
-                nombre,
-                equipo,
-                posicion,
-                edad,
-                nacionalidad,
-                altura,
-                peso,
-                liga,
-                numero_informes,
-                nota_media,
-                nota_max,
-                nota_min,
-                ultima_fecha,
-                foto_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0.0, 0.0, 0.0, NULL, ?)
-            """,
-            (
-                nombre,
-                equipo,
-                posicion,
-                edad,
-                nacionalidad,
-                altura,
-                peso,
-                liga,
-                foto_path,
-            ),
-        )
-        self.conn.commit()
-        return cur.lastrowid
+        columns_json = json.dumps(columns)
+        filters_json = json.dumps(filters)
 
-    def _update_observed_player_aggregates(self, observed_player_id: int, nota_general: float) -> None:
-        """Recompute aggregate statistics for an observed player after a new report."""
-        cur = self.conn.cursor()
-        # Fetch current aggregates
-        cur.execute(
-            """
-            SELECT numero_informes, nota_media, nota_max, nota_min
-            FROM observed_players WHERE id = ?
-            """,
-            (observed_player_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return
-        num = row["numero_informes"] + 1
-        # Recalculate mean
-        nueva_media = ((row["nota_media"] * row["numero_informes"]) + nota_general) / num
-        nueva_max = max(row["nota_max"], nota_general) if row["numero_informes"] > 0 else nota_general
-        nueva_min = (
-            min(row["nota_min"], nota_general)
-            if row["numero_informes"] > 0
-            else nota_general
-        )
-        cur.execute(
-            """
-            UPDATE observed_players
-            SET numero_informes = ?, nota_media = ?, nota_max = ?, nota_min = ?, ultima_fecha = ?
-            WHERE id = ?
-            """,
-            (
-                num,
-                nueva_media,
-                nueva_max,
-                nueva_min,
-                datetime.utcnow().isoformat(),
-                observed_player_id,
-            ),
-        )
-        self.conn.commit()
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            # UPSERT por (user, name)
+            cur.execute(
+                """
+                INSERT INTO filter_configs (user, name, columns_json, filters_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user, name) DO UPDATE SET
+                    columns_json = excluded.columns_json,
+                    filters_json = excluded.filters_json,
+                    created_at = excluded.created_at
+                """,
+                (user, name, columns_json, filters_json, datetime.utcnow().isoformat()),
+            )
+            conn.commit()
 
-    # ------------------------------------------------------------------
-    # Query utilities
-    # ------------------------------------------------------------------
-    def get_catalogue_players(self) -> List[sqlite3.Row]:
-        """Return all players from the catalogue."""
-        cur = self.conn.cursor()
-        cur.execute("SELECT * FROM players_catalogue")
-        return cur.fetchall()
+            # Recuperar id estable de la fila
+            cur.execute(
+                "SELECT id FROM filter_configs WHERE user = ? AND name = ?",
+                (user, name)
+            )
+            row = cur.fetchone()
+            return int(row["id"]) if row else -1
 
-    def get_observed_players(self) -> List[sqlite3.Row]:
-        """Return all observed players."""
-        cur = self.conn.cursor()
-        cur.execute("SELECT * FROM observed_players")
-        return cur.fetchall()
+    def get_filter_configs(self, user: str):
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, name, columns_json, filters_json
+                FROM filter_configs
+                WHERE user = ?
+                ORDER BY created_at DESC
+                """,
+                (user,),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "columns": json.loads(r["columns_json"]),
+                "filters": json.loads(r["filters_json"]),
+            } for r in rows
+        ]
 
-    def get_reports(self) -> List[sqlite3.Row]:
-        """Return all reports."""
-        cur = self.conn.cursor()
-        cur.execute("SELECT * FROM reports")
-        return cur.fetchall()
-
+    # Método de compatibilidad; ya no hay conexión viva que cerrar
     def close(self) -> None:
-        """Close the database connection."""
-        self.conn.close()
-
-
-__all__ = ["DatabaseManager"]
+        pass
