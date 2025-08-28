@@ -398,4 +398,9 @@ def sync_player_to_db(db, url: str, player_id: int = None, debug: bool=False) ->
 
     if debug:
         print(f"[SYNC] Guardado player_id={pid}, career_rows={len(data['career'])}")
+        # AGREGAR ESTAS LÍNEAS DE DEBUG:
+        saved_career = db.get_player_career(pid, include_competitions=True)
+        print(f"[SYNC] CAREER verificación: {len(saved_career)} filas guardadas en BBDD")
+        for i, row in enumerate(saved_career[:3]):
+            print(f"[SYNC] CAREER[{i}]: {row}")
     return pid

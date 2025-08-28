@@ -144,6 +144,12 @@ tab1, tab2, tab3, tab4 = st.tabs(["Trayectoria", "Informes del club", "Vídeos",
 with tab1:
     include_comp = st.checkbox("Ver detalle por competición", value=False)
     career = db.get_player_career(player_id, include_competitions=include_comp)
+    # AGREGAR ESTAS LÍNEAS DE DEBUG:
+    st.write(f"**Debug**: player_id={player_id}, include_competitions={include_comp}")
+    st.write(f"**Debug**: career rows encontradas: {len(career) if career else 0}")
+    if career:
+        st.write(f"**Debug**: Primera fila: {career[0]}")
+    
     if not career:
         st.info("Sin trayectoria guardada.")
     else:
@@ -253,3 +259,41 @@ with tab4:
     if st.button("← Volver a búsqueda de jugadores"):
         st.query_params.clear()
         st.switch_page("pages/4_Perfil_Jugador.py")
+
+# AGREGAR ESTO DESPUÉS DE LOS TABS (TEMPORAL PARA DEBUG):
+st.markdown("---")
+st.subheader("🔧 Debug (temporal)")
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Ver datos raw BBDD"):
+        import sqlite3
+        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "scouting.db")
+        conn = sqlite3.connect(db_path)
+        
+        # Verificar career con más detalle
+        cur = conn.execute("""
+            SELECT season, club, competition, 
+                CASE WHEN competition IS NULL THEN 'IS NULL' 
+                        WHEN competition = '' THEN 'IS EMPTY' 
+                        ELSE 'HAS VALUE' END as comp_status,
+                pj, goles
+            FROM player_career 
+            WHERE player_id = ? 
+            ORDER BY season DESC, club ASC, COALESCE(competition,'') ASC
+        """, (player_id,))
+        
+        career_debug = cur.fetchall()
+        st.write(f"**Career debug ({len(career_debug)} filas):**")
+        for row in career_debug:
+            st.write(dict(zip([d[0] for d in cur.description], row)))
+        
+        conn.close()
+
+with col2:
+    if st.button("Forzar re-sync trayectoria"):
+        if p.get("source_url"):
+            from utils.scraping import sync_player_to_db
+            with st.spinner("Re-sincronizando..."):
+                sync_player_to_db(db, p["source_url"], player_id=player_id, debug=True)
+            st.success("Re-sync completado")
+            st.rerun()

@@ -297,7 +297,7 @@ class DatabaseManager:
             return [dict(r) for r in cur.fetchall()]
         
     def upsert_player_career(self, *, player_id:int, season:str, club:str,
-                         competition:str|None, data:dict, raw_json:str|None=None) -> None:
+                     competition:str|None, data:dict, raw_json:str|None=None) -> None:
         fields = ["pj","goles","asist","ta","tr","pt","ps","min","edad","pts","elo"]
         vals = [data.get(k) for k in fields]
         comp_norm = competition or ""  # normalizamos para buscar
@@ -316,6 +316,8 @@ class DatabaseManager:
                         raw_json=?, updated_at=datetime('now')
                     WHERE id=?
                 """, (competition, *vals, raw_json, row["id"]))
+                # AGREGAR ESTA LÍNEA:
+                print(f"[DB] CAREER UPDATE: player_id={player_id}, season={season}, club={club}, comp={competition}")
             else:
                 cur.execute(f"""
                     INSERT INTO player_career
@@ -323,19 +325,34 @@ class DatabaseManager:
                         pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo, raw_json, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now'))
                 """, (player_id, season, club, competition, *vals, raw_json))
+                # AGREGAR ESTA LÍNEA:
+                print(f"[DB] CAREER INSERT: player_id={player_id}, season={season}, club={club}, comp={competition}")
             conn.commit()
 
     def get_player_career(self, player_id:int, include_competitions:bool=False) -> list[dict]:
-        where = "competition = ''" if not include_competitions else "1=1"
+        # CORREGIR: La condición WHERE estaba mal construida
+        if include_competitions:
+            where_clause = "1=1"  # Mostrar todas las filas
+        else:
+            where_clause = "COALESCE(competition, '') = ''"  # Solo filas sin competición específica
+        
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(f"""
                 SELECT season, club, competition, pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo
                 FROM player_career
-                WHERE player_id = ? AND {where}
+                WHERE player_id = ? AND {where_clause}
                 ORDER BY season DESC, club ASC, COALESCE(competition,'') ASC
             """, (player_id,))
             rows = cur.fetchall()
+        
+        # AGREGAR DEBUG TEMPORAL:
+        print(f"[DB] get_player_career: player_id={player_id}, include_competitions={include_competitions}")
+        print(f"[DB] SQL WHERE: {where_clause}")
+        print(f"[DB] Rows found: {len(rows)}")
+        if rows:
+            print(f"[DB] First row: {dict(rows[0])}")
+        
         return [dict(r) for r in rows]
 
     def get_reports_for_player(self, player_id:int, limit:int=20) -> list[dict]:
