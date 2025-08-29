@@ -407,7 +407,7 @@ with tab5:
     # 1) Obtener informes del jugador
     # Necesitamos un método en DatabaseManager: get_reports_by_player(player_id)
     try:
-        reports = db.get_reports_by_player(player_id) # ← implementaremos si no existe
+        reports = db.get_reports_for_player(player_id) # ← implementaremos si no existe
     except AttributeError:
         reports = []
         st.warning("Falta implementar db.get_reports_by_player(player_id). Lo añadimos en el paso 2.")
