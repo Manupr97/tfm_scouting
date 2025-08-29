@@ -139,7 +139,9 @@ with c2:
 
 st.markdown("---")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Trayectoria", "Informes del club", "Vídeos", "Actualizar datos"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+"Trayectoria", "Informes del club", "Vídeos", "Actualizar datos", "Descargar informes"
+])
 
 with tab1:
     col1, col2 = st.columns([3, 1])
@@ -398,6 +400,124 @@ with tab4:
                 except Exception as e:
                     st.error(f"Error al actualizar datos: {str(e)}")
     
+# === Nueva pestaña: Descargar informes ===
+with tab5:
+    st.subheader("Descargar informes")
+
+    # 1) Obtener informes del jugador
+    # Necesitamos un método en DatabaseManager: get_reports_by_player(player_id)
+    try:
+        reports = db.get_reports_by_player(player_id) # ← implementaremos si no existe
+    except AttributeError:
+        reports = []
+        st.warning("Falta implementar db.get_reports_by_player(player_id). Lo añadimos en el paso 2.")
+
+
+    if not reports:
+        st.info("Este jugador aún no tiene informes o no se pudieron recuperar.")
+    else:
+        import pandas as pd
+
+        # Normaliza a lista de dicts
+        rep_rows = list(reports) if not isinstance(reports, list) else reports
+        df_rep = pd.DataFrame(rep_rows)
+
+        # Columnas sugeridas para mostrar si existen
+        base_cols = ["id", "match_date", "season", "opponent", "created_at", "created_by", "recommendation"]
+        show_cols = [c for c in base_cols if c in df_rep.columns]
+        st.dataframe(df_rep[show_cols] if show_cols else df_rep, use_container_width=True, hide_index=True)
+
+        # 2) Selector de modo de descarga
+        mode = st.radio(
+            "Modo de descarga",
+            ["Informe individual", "Resumen de todos"],
+            horizontal=True,
+            key=f"dl_mode_{player_id}"
+            )
+        
+        if mode == "Informe individual":
+            # Mapea a un dict legible → id
+            opciones = {}
+            for r in rep_rows:
+                rid = r.get("id")
+                label = f"#{rid} · {r.get('match_date','?')} · {r.get('opponent','?')}"
+                opciones[label] = rid
+
+            if not opciones:
+                st.info("No hay informes individuales para este jugador.")
+
+            else:
+                sel_label = st.selectbox("Elige informe", list(opciones.keys()), key=f"pick_one_{player_id}")
+                sel_id = opciones[sel_label]
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Generar PDF (individual)", type="primary", key=f"btn_pdf_one_{player_id}"):
+                        # Dejamos preparada una señal en session_state para el siguiente paso (generación)
+                        st.session_state["__pending_pdf"] = {
+                            "type": "single",
+                            "player_id": player_id,
+                            "report_id": int(sel_id)
+                        }
+                        st.success("Preparado: Generación de PDF individual (implementaremos en el paso 2).")
+
+                with c2:
+                    st.download_button(
+                        "Descargar último PDF (individual)",
+                        data=b"",
+                        file_name="informe_individual.pdf",
+                        disabled=True,
+                        help="Se habilitará cuando generemos y guardemos el PDF."
+                    )
+
+        else:
+            st.caption("Se generará un resumen con IA de todos los informes + visualizaciones.")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Generar PDF (resumen de todos)", type="primary", key=f"btn_pdf_all_{player_id}"):
+                    st.session_state["__pending_pdf"] = {
+                        "type": "all",
+                        "player_id": player_id
+                    }
+                    st.success("Preparado: Generación de PDF resumen (implementaremos en el paso 2).")
+            with c2:
+                st.download_button(
+                    "Descargar último PDF (resumen)",
+                    data=b"",
+                    file_name="informe_resumen.pdf",
+                    disabled=True,
+                    help="Se habilitará cuando generemos y guardemos el PDF."
+                )
+
+        from utils.pdf_export import build_player_report_pdf, build_player_summary_pdf
+
+        pending = st.session_state.pop("__pending_pdf", None)
+        if pending:
+            out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "exports")
+            os.makedirs(out_dir, exist_ok=True)
+
+            if pending["type"] == "single":
+                out_path = os.path.join(out_dir, f"player_{pending['player_id']}_report_{pending['report_id']}.pdf")
+                with st.spinner("Generando PDF del informe individual..."):
+                    try:
+                        pdf_path = build_player_report_pdf(db, pending["player_id"], pending["report_id"], out_path)
+                        with open(pdf_path, "rb") as f:
+                            st.download_button("Descargar PDF (individual)", f.read(), file_name=os.path.basename(pdf_path))
+                        st.success("PDF individual generado.")
+                    except Exception as e:
+                        st.error(f"Error generando PDF individual: {e}")
+
+            elif pending["type"] == "all":
+                out_path = os.path.join(out_dir, f"player_{pending['player_id']}_resumen.pdf")
+                with st.spinner("Generando PDF resumen de todos los informes..."):
+                    try:
+                        pdf_path = build_player_summary_pdf(db, pending["player_id"], out_path, ollama_model="llama3")
+                        with open(pdf_path, "rb") as f:
+                            st.download_button("Descargar PDF (resumen)", f.read(), file_name=os.path.basename(pdf_path))
+                        st.success("PDF resumen generado.")
+                    except Exception as e:
+                        st.error(f"Error generando PDF resumen: {e}")
+
 # Botón para regresar a búsqueda
 st.markdown("---")
 if st.button("← Volver a búsqueda de jugadores"):

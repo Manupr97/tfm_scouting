@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional
+import logging
 
 
 class DatabaseManager:
@@ -19,6 +20,7 @@ class DatabaseManager:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self._lock = threading.RLock()
+        self.logger = logging.getLogger(__name__)
         self._create_tables_if_missing()
 
     def _connect(self) -> sqlite3.Connection:
@@ -316,8 +318,7 @@ class DatabaseManager:
                         raw_json=?, updated_at=datetime('now')
                     WHERE id=?
                 """, (competition, *vals, raw_json, row["id"]))
-                # AGREGAR ESTA LÍNEA:
-                print(f"[DB] CAREER UPDATE: player_id={player_id}, season={season}, club={club}, comp={competition}")
+                self.logger.debug(f"CAREER UPDATE: player_id={player_id}, season={season}, club={club}, comp={competition}")
             else:
                 cur.execute(f"""
                     INSERT INTO player_career
@@ -325,8 +326,7 @@ class DatabaseManager:
                         pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo, raw_json, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now'))
                 """, (player_id, season, club, competition, *vals, raw_json))
-                # AGREGAR ESTA LÍNEA:
-                print(f"[DB] CAREER INSERT: player_id={player_id}, season={season}, club={club}, comp={competition}")
+                self.logger.debug(f"CAREER INSERT: player_id={player_id}, season={season}, club={club}, comp={competition}")
             conn.commit()
 
     def get_player_career(self, player_id:int, include_competitions:bool=False) -> list[dict]:
@@ -346,13 +346,7 @@ class DatabaseManager:
             """, (player_id,))
             rows = cur.fetchall()
         
-        # AGREGAR DEBUG TEMPORAL:
-        print(f"[DB] get_player_career: player_id={player_id}, include_competitions={include_competitions}")
-        print(f"[DB] SQL WHERE: {where_clause}")
-        print(f"[DB] Rows found: {len(rows)}")
-        if rows:
-            print(f"[DB] First row: {dict(rows[0])}")
-        
+        self.logger.debug(f"get_player_career: player_id={player_id}, include_competitions={include_competitions}, found={len(rows)} rows")
         return [dict(r) for r in rows]
 
     def get_reports_for_player(self, player_id:int, limit:int=20) -> list[dict]:
@@ -530,6 +524,10 @@ class DatabaseManager:
                 "filters": json.loads(r["filters_json"]),
             } for r in rows
         ]
+
+    # PDF export (stubs, se implementarán en utils/pdf_export.py)
+    def get_reports_by_player(self, player_id: int, limit: int = 200) -> list[dict]:
+        return self.list_reports(player_id=player_id, limit=limit)
 
     # Método de compatibilidad; ya no hay conexión viva que cerrar
     def close(self) -> None:
