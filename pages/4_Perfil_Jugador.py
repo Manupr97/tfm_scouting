@@ -142,35 +142,179 @@ st.markdown("---")
 tab1, tab2, tab3, tab4 = st.tabs(["Trayectoria", "Informes del club", "Vídeos", "Actualizar datos"])
 
 with tab1:
-    include_comp = st.checkbox("Ver detalle por competición", value=False)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader("Trayectoria profesional")
+    with col2:
+        include_comp = st.checkbox("Ver detalle por competición", value=False)
+    
     career = db.get_player_career(player_id, include_competitions=include_comp)
-    # AGREGAR ESTAS LÍNEAS DE DEBUG:
-    st.write(f"**Debug**: player_id={player_id}, include_competitions={include_comp}")
-    st.write(f"**Debug**: career rows encontradas: {len(career) if career else 0}")
-    if career:
-        st.write(f"**Debug**: Primera fila: {career[0]}")
     
     if not career:
         st.info("Sin trayectoria guardada.")
     else:
         df = pd.DataFrame(career)
+        
         # Renombrar columnas para mejor visualización
-        df = df.rename(columns={
-            "season":"Temporada", "club":"Club", "competition":"Competición",
-            "pj":"PJ","goles":"G","asist":"A","ta":"TA","tr":"TR","pt":"PT","ps":"PS","min":"Min",
-            "edad":"Edad","pts":"Pts","elo":"ELO"
-        })
+        column_names = {
+            "season": "Temporada", "club": "Club", "competition": "Competición",
+            "pj": "PJ", "goles": "G", "asist": "A", "ta": "TA", "tr": "TR",
+            "pt": "PT", "ps": "PS", "min": "Min", "edad": "Edad", "pts": "Pts", "elo": "ELO"
+        }
+        df = df.rename(columns=column_names)
         
-        # Mostrar solo las columnas que tienen datos
-        cols_to_show = []
-        for col in df.columns:
-            if col in ["Temporada", "Club", "Competición"]:
-                cols_to_show.append(col)
-            elif df[col].notna().any() and (df[col] != 0).any():
-                cols_to_show.append(col)
+        # Limpiar columna Competition (convertir None a "General")
+        if "Competición" in df.columns:
+            df["Competición"] = df["Competición"].fillna("General")
+            df.loc[df["Competición"] == "", "Competición"] = "General"
         
-        if cols_to_show:
-            st.dataframe(df[cols_to_show], use_container_width=True, hide_index=True)
+        # Definir columnas siempre visibles
+        core_columns = ["Temporada", "Club"]
+        if include_comp:
+            core_columns.append("Competición")
+        
+        # Detectar qué columnas de stats tienen datos
+        stats_columns = ["PJ", "G", "A", "TA", "TR", "PT", "PS", "Min", "Edad", "Pts", "ELO"]
+        visible_stats = []
+        
+        for col in stats_columns:
+            if col in df.columns and df[col].notna().any() and (df[col] != 0).any():
+                visible_stats.append(col)
+        
+        # Combinar columnas finales
+        final_columns = core_columns + visible_stats
+        
+        # Configuración de formato para el DataFrame
+        column_config = {}
+        
+        # Formatear columnas numéricas
+        for col in visible_stats:
+            if col in ["Pts"]:
+                column_config[col] = st.column_config.NumberColumn(
+                    col, format="%.1f", width="small"
+                )
+            elif col in ["Min"]:
+                column_config[col] = st.column_config.NumberColumn(
+                    col, format="%d", width="small"
+                )
+            else:
+                column_config[col] = st.column_config.NumberColumn(
+                    col, format="%d", width="small"
+                )
+        
+        # Configurar columnas de texto
+        column_config["Temporada"] = st.column_config.TextColumn("Temporada", width="small")
+        column_config["Club"] = st.column_config.TextColumn("Club", width="medium")
+        if "Competición" in final_columns:
+            column_config["Competición"] = st.column_config.TextColumn("Competición", width="medium")
+        
+        # Mostrar tabla con configuración
+        if final_columns:
+            # Colorear filas alternas para mejor legibilidad
+            st.dataframe(
+                df[final_columns],
+                use_container_width=True,
+                hide_index=True,
+                column_config=column_config,
+                height=min(400, 35 * len(df) + 38)  # Altura dinámica
+            )
+            
+            # Estadísticas resumen
+            if not include_comp:  # Solo mostrar resumen cuando vemos totales
+                st.markdown("---")
+                st.subheader("📊 Resumen de carrera")
+                
+                # Calcular totales de carrera (solo filas "General")
+                general_rows = df[df["Competición"] == "General"] if "Competición" in df.columns else df
+                
+                if not general_rows.empty:
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        total_pj = general_rows["PJ"].sum() if "PJ" in general_rows.columns else 0
+                        total_min = general_rows["Min"].sum() if "Min" in general_rows.columns else 0
+                        st.metric("Partidos jugados", f"{int(total_pj)}")
+                        st.caption(f"{int(total_min):,} minutos".replace(',', '.'))
+                    
+                    with col2:
+                        total_goles = general_rows["G"].sum() if "G" in general_rows.columns else 0
+                        total_asist = general_rows["A"].sum() if "A" in general_rows.columns else 0
+                        st.metric("Goles", f"{int(total_goles)}")
+                        st.caption(f"{int(total_asist)} asistencias")
+                    
+                    with col3:
+                        total_ta = general_rows["TA"].sum() if "TA" in general_rows.columns else 0
+                        total_tr = general_rows["TR"].sum() if "TR" in general_rows.columns else 0
+                        st.metric("Tarjetas amarillas", f"{int(total_ta)}")
+                        st.caption(f"{int(total_tr)} rojas")
+                    
+                    with col4:
+                        if "Pts" in general_rows.columns and general_rows["Pts"].notna().any():
+                            avg_pts = general_rows["Pts"].mean()
+                            st.metric("Media puntuación", f"{avg_pts:.1f}")
+                        
+                        if "ELO" in general_rows.columns and general_rows["ELO"].notna().any():
+                            current_elo = general_rows["ELO"].iloc[0]  # ELO más reciente
+                            st.caption(f"ELO actual: {int(current_elo)}")
+                
+                # Gráfico de evolución (solo si hay datos de puntuación o ELO)
+                if len(general_rows) > 1 and ("Pts" in general_rows.columns or "ELO" in general_rows.columns):
+                    st.markdown("---")
+                    st.subheader("📈 Evolución")
+                    
+                    # Preparar datos para gráfico
+                    plot_data = general_rows.copy()
+                    plot_data = plot_data.sort_values("Temporada")
+                    
+                    # Crear gráfico con plotly si está disponible
+                    try:
+                        import plotly.express as px
+                        import plotly.graph_objects as go
+                        
+                        fig = go.Figure()
+                        
+                        if "Pts" in plot_data.columns and plot_data["Pts"].notna().any():
+                            fig.add_trace(go.Scatter(
+                                x=plot_data["Temporada"],
+                                y=plot_data["Pts"],
+                                mode='lines+markers',
+                                name='Puntuación media',
+                                line=dict(color='#1f77b4', width=3),
+                                marker=dict(size=8)
+                            ))
+                        
+                        if "ELO" in plot_data.columns and plot_data["ELO"].notna().any():
+                            fig.add_trace(go.Scatter(
+                                x=plot_data["Temporada"],
+                                y=plot_data["ELO"],
+                                mode='lines+markers',
+                                name='ELO',
+                                yaxis='y2',
+                                line=dict(color='#ff7f0e', width=3),
+                                marker=dict(size=8)
+                            ))
+                        
+                        # Configurar layout
+                        fig.update_layout(
+                            title="Evolución del rendimiento por temporada",
+                            xaxis_title="Temporada",
+                            yaxis_title="Puntuación media",
+                            yaxis2=dict(
+                                title="ELO",
+                                overlaying='y',
+                                side='right'
+                            ),
+                            height=400,
+                            showlegend=True,
+                            hovermode='x unified'
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                    except ImportError:
+                        # Fallback a gráfico simple de Streamlit
+                        if "Pts" in plot_data.columns:
+                            st.line_chart(plot_data.set_index("Temporada")["Pts"])
         else:
             st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -254,46 +398,8 @@ with tab4:
                 except Exception as e:
                     st.error(f"Error al actualizar datos: {str(e)}")
     
-    # Botón para regresar a búsqueda
-    st.markdown("---")
-    if st.button("← Volver a búsqueda de jugadores"):
-        st.query_params.clear()
-        st.switch_page("pages/4_Perfil_Jugador.py")
-
-# AGREGAR ESTO DESPUÉS DE LOS TABS (TEMPORAL PARA DEBUG):
+# Botón para regresar a búsqueda
 st.markdown("---")
-st.subheader("🔧 Debug (temporal)")
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("Ver datos raw BBDD"):
-        import sqlite3
-        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "scouting.db")
-        conn = sqlite3.connect(db_path)
-        
-        # Verificar career con más detalle
-        cur = conn.execute("""
-            SELECT season, club, competition, 
-                CASE WHEN competition IS NULL THEN 'IS NULL' 
-                        WHEN competition = '' THEN 'IS EMPTY' 
-                        ELSE 'HAS VALUE' END as comp_status,
-                pj, goles
-            FROM player_career 
-            WHERE player_id = ? 
-            ORDER BY season DESC, club ASC, COALESCE(competition,'') ASC
-        """, (player_id,))
-        
-        career_debug = cur.fetchall()
-        st.write(f"**Career debug ({len(career_debug)} filas):**")
-        for row in career_debug:
-            st.write(dict(zip([d[0] for d in cur.description], row)))
-        
-        conn.close()
-
-with col2:
-    if st.button("Forzar re-sync trayectoria"):
-        if p.get("source_url"):
-            from utils.scraping import sync_player_to_db
-            with st.spinner("Re-sincronizando..."):
-                sync_player_to_db(db, p["source_url"], player_id=player_id, debug=True)
-            st.success("Re-sync completado")
-            st.rerun()
+if st.button("← Volver a búsqueda de jugadores"):
+    st.query_params.clear()
+    st.switch_page("pages/4_Perfil_Jugador.py")
