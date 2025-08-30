@@ -352,6 +352,10 @@ class DatabaseManager:
     def get_reports_for_player(self, player_id:int, limit:int=20) -> list[dict]:
         return self.list_reports(player_id=player_id, limit=limit)
 
+    def get_reports_by_player(self, player_id: int, limit: int = 200) -> list[dict]:
+        """Alias de get_reports_for_player para compatibilidad con PDF export"""
+        return self.get_reports_for_player(player_id, limit)
+    
     # === Informes ===
     def create_report(self, *, player_id: int, user: str, season: str|None,
                     match_date: str|None, opponent: str|None, minutes_observed: int|None,

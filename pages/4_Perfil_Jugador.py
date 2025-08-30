@@ -407,7 +407,7 @@ with tab5:
     # 1) Obtener informes del jugador
     # Necesitamos un método en DatabaseManager: get_reports_by_player(player_id)
     try:
-        reports = db.get_reports_for_player(player_id) # ← implementaremos si no existe
+        reports = db.get_reports_by_player(player_id) # ← implementaremos si no existe
     except AttributeError:
         reports = []
         st.warning("Falta implementar db.get_reports_by_player(player_id). Lo añadimos en el paso 2.")
@@ -421,6 +421,9 @@ with tab5:
         # Normaliza a lista de dicts
         rep_rows = list(reports) if not isinstance(reports, list) else reports
         df_rep = pd.DataFrame(rep_rows)
+        # Renombrar 'user' a 'created_by' para mejor visualización
+        if 'user' in df_rep.columns:
+            df_rep = df_rep.rename(columns={'user': 'created_by'})
 
         # Columnas sugeridas para mostrar si existen
         base_cols = ["id", "match_date", "season", "opponent", "created_at", "created_by", "recommendation"]
