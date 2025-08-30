@@ -7,8 +7,9 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 import math
-import math
 from statistics import mean, median
+import hashlib
+from pathlib import Path
 
 def _safe_float(x):
     try:
@@ -92,6 +93,54 @@ def _compute_score_summary(reports: list[dict]) -> dict:
 
 def _fmt(val):
     return "—" if val is None else (f"{val:.2f}" if isinstance(val, (int, float)) else str(val))
+
+def _generar_hash_informe(report: dict, player: dict) -> str:
+    """Genera hash único basado en contenido del informe + jugador"""
+    contenido = {
+        "report_id": report.get("id"),
+        "player_data": {
+            "name": player.get("name"),
+            "team": player.get("team"),
+            "position": player.get("position"),
+            "updated_at": player.get("updated_at")
+        },
+        "report_data": {
+            "ratings": report.get("ratings"),
+            "notes": report.get("notes"),
+            "recommendation": report.get("recommendation"),
+            "confidence": report.get("confidence"),
+            "updated_at": report.get("updated_at")
+        }
+    }
+    
+    contenido_str = json.dumps(contenido, sort_keys=True)
+    return hashlib.md5(contenido_str.encode()).hexdigest()[:12]
+
+def _verificar_pdf_cache(cache_path: str, hash_actual: str) -> bool:
+    """Verifica si existe PDF cached y coincide el hash"""
+    if not os.path.exists(cache_path):
+        return False
+    
+    # Verificar archivo hash
+    hash_file = cache_path.replace('.pdf', '.hash')
+    if not os.path.exists(hash_file):
+        return False
+    
+    try:
+        with open(hash_file, 'r') as f:
+            hash_guardado = f.read().strip()
+        return hash_guardado == hash_actual
+    except:
+        return False
+
+def _guardar_hash_cache(cache_path: str, hash_valor: str) -> None:
+    """Guarda hash del PDF para verificación futura"""
+    hash_file = cache_path.replace('.pdf', '.hash')
+    try:
+        with open(hash_file, 'w') as f:
+            f.write(hash_valor)
+    except:
+        pass
 
 # ---------- helpers locales, sin dependencias externas en import ----------
 def _ensure_dir(path: str) -> None:
@@ -265,11 +314,31 @@ def build_player_report_pdf(db, player_id: int, report_id: int, out_path: str) -
     """
     PDF individual profesional con diseño del club
     """
+
+    r = db.get_report(report_id)
+    p = db.get_player(player_id)
+    if not r or not p:
+        raise ValueError("Jugador o informe no encontrado")
+
+    # === VERIFICAR CACHE PRIMERO ===
+    hash_actual = _generar_hash_informe(r, p)
+    cache_dir = os.path.join(os.path.dirname(out_path), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"report_{player_id}_{report_id}_{hash_actual}.pdf")
+    
+    # Si existe cache válido, copiarlo
+    if _verificar_pdf_cache(cache_path, hash_actual):
+        print(f"✅ Usando PDF desde cache: {cache_path}")
+        import shutil
+        shutil.copy2(cache_path, out_path)
+        return out_path
+    
+    print(f"🔄 Generando PDF nuevo: {out_path}")
+
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
     from reportlab.lib.units import cm
     from reportlab.lib.colors import HexColor
-    import os
     
     # Colores del club
     NEGRO = HexColor("#000000")
@@ -552,6 +621,15 @@ def build_player_report_pdf(db, player_id: int, report_id: int, out_path: str) -
             y_current -= 0.5*cm
 
     c.save()
+    # === GUARDAR EN CACHE ===
+    try:
+        import shutil
+        shutil.copy2(out_path, cache_path)
+        _guardar_hash_cache(cache_path, hash_actual)
+        print(f"💾 PDF guardado en cache: {cache_path}")
+    except Exception as e:
+        print(f"⚠️ Error guardando cache: {e}")
+
     return out_path
 
 def build_player_summary_pdf(db, player_id: int, out_path: str, *, ollama_model: Optional[str] = None) -> str:

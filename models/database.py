@@ -20,8 +20,34 @@ class DatabaseManager:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self._lock = threading.RLock()
-        self.logger = logging.getLogger(__name__)
+        
+        # ← CAMBIAR A LOGGING SIMPLE
+        from utils.simple_logging import get_logger
+        self.logger = get_logger("database")
+        
         self._create_tables_if_missing()
+
+    @staticmethod
+    def calculate_age(birthdate_str: str | None) -> int | None:
+        """Calcula edad actual desde birthdate en formato ISO (YYYY-MM-DD)"""
+        if not birthdate_str:
+            return None
+        
+        try:
+            from datetime import date, datetime
+            # Intentar formato ISO primero
+            try:
+                birth_date = datetime.strptime(birthdate_str, "%Y-%m-%d").date()
+            except ValueError:
+                # Fallback formato español
+                birth_date = datetime.strptime(birthdate_str, "%d/%m/%Y").date()
+            
+            today = date.today()
+            age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+            return age if age >= 0 else None
+            
+        except Exception:
+            return None
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -30,8 +56,11 @@ class DatabaseManager:
         conn.execute("PRAGMA journal_mode=WAL;")
         # Integridad y rendimiento razonable
         conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA synchronous=NORMAL;")     # Balance seguridad/velocidad
+        conn.execute("PRAGMA cache_size=10000;")       # Cache más grande
+        conn.execute("PRAGMA temp_store=memory;")      # Tablas temp en RAM
         return conn
-
+    
     def _create_tables_if_missing(self) -> None:
         with self._lock, self._connect() as conn:
             cur = conn.cursor()
@@ -153,87 +182,114 @@ class DatabaseManager:
     def _json_dumps(self, obj) -> str:
         return json.dumps(obj, ensure_ascii=False)
 
-    # === Jugadores observados ===
     def upsert_scouted_player(self, *, name: str, team: str|None=None, position: str|None=None,
-                      nationality: str|None=None, birthdate: str|None=None, age: int|None=None,
-                      height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
-                      photo_url: str|None=None, source_url: str|None=None,
-                      shirt_number: int|None=None, value_keur: int|None=None, elo: int|None=None) -> int:
+                  nationality: str|None=None, birthdate: str|None=None,
+                  height_cm: float|None=None, weight_kg: float|None=None, foot: str|None=None,
+                  photo_url: str|None=None, source_url: str|None=None,
+                  shirt_number: int|None=None, value_keur: int|None=None, elo: int|None=None) -> int:
+    
         with self._lock, self._connect() as conn:
             cur = conn.cursor()
             
-            # 1. Buscar primero por source_url (más confiable)
-            if source_url:
-                cur.execute("SELECT id FROM scouted_players WHERE source_url = ?", (source_url,))
+            # PRIORIDAD 1: Buscar por source_url (identificador más confiable)
+            if source_url and source_url.strip():
+                cur.execute("SELECT id FROM scouted_players WHERE source_url = ?", (source_url.strip(),))
                 row = cur.fetchone()
                 if row:
                     pid = int(row["id"])
-                    # Actualizar datos existentes (sin sobrescribir con None/vacío)
-                    cur.execute("""
-                        UPDATE scouted_players
-                        SET team        = COALESCE(NULLIF(?, ''), team),
-                            position    = COALESCE(?, position),
-                            nationality = COALESCE(?, nationality),
-                            birthdate   = COALESCE(NULLIF(?, ''), birthdate),
-                            age         = COALESCE(?, age),
-                            height_cm   = COALESCE(?, height_cm),
-                            weight_kg   = COALESCE(?, weight_kg),
-                            foot        = COALESCE(?, foot),
-                            photo_url   = COALESCE(?, photo_url),
-                            shirt_number= COALESCE(?, shirt_number),
-                            value_keur  = COALESCE(?, value_keur),
-                            elo         = COALESCE(?, elo),
-                            updated_at  = datetime('now')
-                        WHERE id = ?
-                    """, (team, position, nationality, birthdate, age, height_cm, weight_kg, foot,
-                        photo_url, shirt_number, value_keur, elo, pid))
+                    self._update_existing_player(cur, pid, locals())
                     conn.commit()
                     return pid
             
-            # 2. Buscar por nombre + fecha (sin equipo en la clave)
-            cur.execute("""
-                SELECT id FROM scouted_players
-                WHERE name = ? AND COALESCE(birthdate,'') = COALESCE(?, '')
-            """, (name, birthdate))
-            row = cur.fetchone()
+            # PRIORIDAD 2: Buscar por nombre + fecha nacimiento (sin equipo)
+            if name and birthdate:
+                cur.execute("""
+                    SELECT id FROM scouted_players
+                    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) 
+                    AND COALESCE(TRIM(birthdate),'') = COALESCE(TRIM(?), '')
+                """, (name, birthdate))
+                row = cur.fetchone()
+                if row:
+                    pid = int(row["id"])
+                    self._update_existing_player(cur, pid, locals())
+                    conn.commit()
+                    return pid
             
-            if row:
-                pid = int(row["id"])
-                # Actualizar registro existente
+            # PRIORIDAD 3: Buscar solo por nombre (caso riesgoso - avisar)
+            if name:
                 cur.execute("""
-                    UPDATE scouted_players
-                    SET team        = COALESCE(NULLIF(?, ''), team),
-                        position    = COALESCE(?, position),
-                        nationality = COALESCE(?, nationality),
-                        age         = COALESCE(?, age),
-                        height_cm   = COALESCE(?, height_cm),
-                        weight_kg   = COALESCE(?, weight_kg),
-                        foot        = COALESCE(?, foot),
-                        photo_url   = COALESCE(?, photo_url),
-                        source_url  = COALESCE(?, source_url),
-                        shirt_number= COALESCE(?, shirt_number),
-                        value_keur  = COALESCE(?, value_keur),
-                        elo         = COALESCE(?, elo),
-                        updated_at  = datetime('now')
-                    WHERE id = ?
-                """, (team, position, nationality, age, height_cm, weight_kg, foot,
-                    photo_url, source_url, shirt_number, value_keur, elo, pid))
-                conn.commit()
-                return pid
-            else:
-                # 3. Crear nuevo registro
-                cur.execute("""
-                    INSERT INTO scouted_players
-                        (name, team, position, nationality, birthdate, age, height_cm, weight_kg,
-                        foot, photo_url, source_url, shirt_number, value_keur, elo)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg,
-                    foot, photo_url, source_url, shirt_number, value_keur, elo))
-                conn.commit()
-                return int(cur.lastrowid)
+                    SELECT id, name, team, birthdate FROM scouted_players
+                    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                """, (name,))
+                rows = cur.fetchall()
+                
+                if rows:
+                    # Si hay múltiples coincidencias, loggear para revisión manual
+                    if len(rows) > 1:
+                        self.logger.warning(f"DUPLICADO POTENCIAL: {len(rows)} jugadores con nombre '{name}'. IDs: {[r['id'] for r in rows]}")
+                    
+                    # Tomar el más reciente (por updated_at)
+                    cur.execute("""
+                        SELECT id FROM scouted_players
+                        WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                        ORDER BY updated_at DESC LIMIT 1
+                    """, (name,))
+                    row = cur.fetchone()
+                    if row:
+                        pid = int(row["id"])
+                        self.logger.info(f"PLAYER_FOUND_BY_URL: pid={pid}, url={source_url}")
+                        conn.commit()
+                        return pid
+                    
+                    # Al crear nuevo jugador:
+                    new_id = int(cur.lastrowid)
+                    self.logger.info(f"PLAYER_CREATED: pid={new_id}, name='{name}', source_url='{source_url or 'None'}'")
+                    return new_id
+            
+            # PRIORIDAD 4: Crear nuevo registro
+            cur.execute("""
+                INSERT INTO scouted_players
+                    (name, team, position, nationality, birthdate, height_cm, weight_kg,
+                    foot, photo_url, source_url, shirt_number, value_keur, elo)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (name, team, position, nationality, birthdate, height_cm, weight_kg,
+                foot, photo_url, source_url, shirt_number, value_keur, elo))
+            conn.commit()
+            new_id = int(cur.lastrowid)
+            
+            if self.logger:
+                self.logger.info(f"NUEVO JUGADOR creado: ID={new_id}, name='{name}', source_url='{source_url}'")
+            
+            return new_id
+
+    def _update_existing_player(self, cur, player_id: int, data: dict) -> None:
+        """Helper para actualizar jugador existente sin sobrescribir con None/vacío"""
+        cur.execute("""
+            UPDATE scouted_players
+            SET team        = COALESCE(NULLIF(TRIM(?), ''), team),
+                position    = COALESCE(NULLIF(TRIM(?), ''), position),
+                nationality = COALESCE(NULLIF(TRIM(?), ''), nationality),
+                birthdate   = COALESCE(NULLIF(TRIM(?), ''), birthdate),
+                height_cm   = COALESCE(?, height_cm),
+                weight_kg   = COALESCE(?, weight_kg),
+                foot        = COALESCE(NULLIF(TRIM(?), ''), foot),
+                photo_url   = COALESCE(NULLIF(TRIM(?), ''), photo_url),
+                source_url  = COALESCE(NULLIF(TRIM(?), ''), source_url),
+                shirt_number= COALESCE(?, shirt_number),
+                value_keur  = COALESCE(?, value_keur),
+                elo         = COALESCE(?, elo),
+                updated_at  = datetime('now')
+            WHERE id = ?
+        """, (
+            data.get('team'), data.get('position'), data.get('nationality'), 
+            data.get('birthdate'), data.get('height_cm'), data.get('weight_kg'), 
+            data.get('foot'), data.get('photo_url'), data.get('source_url'),
+            data.get('shirt_number'), data.get('value_keur'), data.get('elo'),
+            player_id
+        ))
 
     def sync_player_with_id(self, player_id: int, *, name: str=None, team: str=None, position: str=None,
-                       nationality: str=None, birthdate: str=None, age: int=None,
+                       nationality: str=None, birthdate: str=None,
                        height_cm: float=None, weight_kg: float=None, foot: str=None,
                        photo_url: str=None, source_url: str=None,
                        shirt_number: int=None, value_keur: int=None, elo: int=None) -> None:
@@ -247,7 +303,6 @@ class DatabaseManager:
                     position    = COALESCE(?, position),
                     nationality = COALESCE(?, nationality),
                     birthdate   = COALESCE(NULLIF(?, ''), birthdate),
-                    age         = COALESCE(?, age),
                     height_cm   = COALESCE(?, height_cm),
                     weight_kg   = COALESCE(?, weight_kg),
                     foot        = COALESCE(?, foot),
@@ -258,7 +313,7 @@ class DatabaseManager:
                     elo         = COALESCE(?, elo),
                     updated_at  = datetime('now')
                 WHERE id = ?
-            """, (name, team, position, nationality, birthdate, age, height_cm, weight_kg, foot,
+            """, (name, team, position, nationality, birthdate, height_cm, weight_kg, foot,
                 photo_url, source_url, shirt_number, value_keur, elo, player_id))
             conn.commit()
 
@@ -267,7 +322,13 @@ class DatabaseManager:
             cur = conn.cursor()
             cur.execute("SELECT * FROM scouted_players WHERE id = ?", (player_id,))
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            
+            player_data = dict(row)
+            # Calcular edad automáticamente
+            player_data["age"] = self.calculate_age(player_data.get("birthdate"))
+            return player_data
 
     def _ensure_column(self, table: str, col: str, ddl: str):
         with self._connect() as conn:
@@ -298,6 +359,110 @@ class DatabaseManager:
             """, (pat, pat, pat, limit))
             return [dict(r) for r in cur.fetchall()]
         
+    def search_players_advanced(self, *, 
+                           query: str = "", 
+                           team: str = "", 
+                           position: str = "",
+                           nationality: str = "",
+                           min_age: int = None,
+                           max_age: int = None,
+                           has_reports: bool = None,
+                           limit: int = 50,
+                           order_by: str = "updated_at") -> list[dict]:
+        """Búsqueda avanzada con filtros SQL optimizados"""
+        
+        with self._lock, self._connect() as conn:
+            cur = conn.cursor()
+            
+            # Query base con JOINs para reports si necesario
+            base_query = """
+                SELECT DISTINCT p.*, 
+                    CASE WHEN p.birthdate IS NOT NULL 
+                            THEN CAST((julianday('now') - julianday(p.birthdate)) / 365.25 AS INTEGER)
+                            ELSE NULL END as age_calculated,
+                    COUNT(r.id) as report_count
+                FROM scouted_players p
+                LEFT JOIN scout_reports r ON p.id = r.player_id
+                WHERE 1=1
+            """
+            
+            params = []
+            
+            # Filtros dinámicos
+            if query.strip():
+                base_query += " AND (LOWER(p.name) LIKE ? OR LOWER(COALESCE(p.team,'')) LIKE ? OR LOWER(COALESCE(p.nationality,'')) LIKE ?)"
+                pattern = f"%{query.strip().lower()}%"
+                params.extend([pattern, pattern, pattern])
+            
+            if team.strip():
+                base_query += " AND LOWER(COALESCE(p.team,'')) LIKE ?"
+                params.append(f"%{team.strip().lower()}%")
+            
+            if position.strip():
+                base_query += " AND LOWER(COALESCE(p.position,'')) LIKE ?"
+                params.append(f"%{position.strip().lower()}%")
+            
+            if nationality.strip():
+                base_query += " AND LOWER(COALESCE(p.nationality,'')) LIKE ?"
+                params.append(f"%{nationality.strip().lower()}%")
+            
+            # Filtros de edad usando birthdate
+            if min_age is not None:
+                base_query += " AND p.birthdate IS NOT NULL AND (julianday('now') - julianday(p.birthdate)) / 365.25 >= ?"
+                params.append(float(min_age))
+            
+            if max_age is not None:
+                base_query += " AND p.birthdate IS NOT NULL AND (julianday('now') - julianday(p.birthdate)) / 365.25 <= ?"
+                params.append(float(max_age))
+            
+            # Filtro por existencia de informes
+            if has_reports is not None:
+                if has_reports:
+                    base_query += " HAVING COUNT(r.id) > 0"
+                else:
+                    base_query += " HAVING COUNT(r.id) = 0"
+            else:
+                base_query += " GROUP BY p.id"
+            
+            # Ordenación segura
+            valid_orders = {
+                "name": "p.name COLLATE NOCASE", 
+                "team": "COALESCE(p.team,'') COLLATE NOCASE", 
+                "updated_at": "p.updated_at DESC",
+                "report_count": "report_count DESC",
+                "age": "age_calculated"
+            }
+            order_column = valid_orders.get(order_by, "p.updated_at DESC")
+            base_query += f" ORDER BY {order_column}"
+            
+            base_query += " LIMIT ?"
+            params.append(limit)
+            
+            try:
+                cur.execute(base_query, params)
+                rows = cur.fetchall()
+                
+                # Procesar resultados
+                result = []
+                for row in rows:
+                    player_data = dict(row)
+                    # Usar edad calculada en SQL
+                    if player_data.get("age_calculated"):
+                        player_data["age"] = int(player_data["age_calculated"])
+                    else:
+                        player_data["age"] = self.calculate_age(player_data.get("birthdate"))
+                    
+                    # Limpiar campos auxiliares
+                    player_data.pop("age_calculated", None)
+                    result.append(player_data)
+                
+                return result
+                
+            except Exception as e:
+                self.logger.error(f"Error en search_players_advanced: {e}")
+                # Fallback a búsqueda simple
+                return self.search_players(query, limit)
+        
     def upsert_player_career(self, *, player_id:int, season:str, club:str,
                      competition:str|None, data:dict, raw_json:str|None=None) -> None:
         fields = ["pj","goles","asist","ta","tr","pt","ps","min","edad","pts","elo"]
@@ -318,7 +483,7 @@ class DatabaseManager:
                         raw_json=?, updated_at=datetime('now')
                     WHERE id=?
                 """, (competition, *vals, raw_json, row["id"]))
-                self.logger.debug(f"CAREER UPDATE: player_id={player_id}, season={season}, club={club}, comp={competition}")
+                self.logger.info(f"CAREER_UPDATE: player_id={player_id}, season={season}, club={club}")
             else:
                 cur.execute(f"""
                     INSERT INTO player_career
@@ -326,7 +491,7 @@ class DatabaseManager:
                         pj, goles, asist, ta, tr, pt, ps, min, edad, pts, elo, raw_json, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now'))
                 """, (player_id, season, club, competition, *vals, raw_json))
-                self.logger.debug(f"CAREER INSERT: player_id={player_id}, season={season}, club={club}, comp={competition}")
+                self.logger.info(f"CAREER_INSERT: player_id={player_id}, season={season}, club={club}")
             conn.commit()
 
     def get_player_career(self, player_id:int, include_competitions:bool=False) -> list[dict]:

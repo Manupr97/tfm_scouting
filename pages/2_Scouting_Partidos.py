@@ -151,21 +151,28 @@ def _bloque_equipo(box: dict, rival_name: str):
                 st.caption(pos or "—")
             with cols[2]:
                 if st.button("📌 Evaluar", key=f"eval_{box['name']}_T_{numero}_{nombre}"):
-                    # 1) Scrape del perfil del jugador (BIO + CAREER)
+                    # 1) Scrape del perfil del jugador CON FEEDBACK VISUAL
                     bio_data = {}
-                    try:
-                        if url:
-                            data = scrape_player_full(url, debug=True)  # trae {'bio':..., 'career':...}
-                            bio_data = data.get("bio", {}) or {}
-                            # 2) (Opcional pero recomendable) Persistir en BBDD para tener foto/trayectoria ya guardada
+                    if url:
+                        with st.spinner(f"📡 Obteniendo datos de {nombre}..."):
                             try:
-                                if url:
-                                    # NO pasar player_id para que use la lógica de upsert normal
+                                data = scrape_player_full(url, debug=True)
+                                bio_data = data.get("bio", {}) or {}
+                                
+                                if bio_data:
+                                    st.success(f"✅ Datos obtenidos: {bio_data.get('name', nombre)}")
+                                else:
+                                    st.warning("⚠️ No se pudieron obtener datos adicionales")
+                                
+                                # 2) Persistir en BBDD para tener foto/trayectoria ya guardada
+                                try:
                                     sync_player_to_db(db, url, player_id=None, debug=True)
+                                except Exception as e:
+                                    st.warning(f"Error guardando en BD: {e}")
+                                    
                             except Exception as e:
-                                print("[EVAL] sync_player_to_db falló:", e)
-                    except Exception as e:
-                        print("[EVAL] scrape_player_full falló:", e)
+                                st.error(f"Error obteniendo datos: {e}")
+                                bio_data = {}
 
                     # 3) Prefills a sesión para 3_Informes
                     st.session_state["prefill_name"]        = bio_data.get("name") or nombre
@@ -208,22 +215,29 @@ def _bloque_equipo(box: dict, rival_name: str):
                 st.markdown(f"{numero}  {nombre}")
                 st.caption(pos or "—")
             with cols[2]:
-                if st.button("📌 Evaluar", key=f"eval_{box['name']}_S_{numero}_{nombre}"):
-                    # 1) Scrape del perfil del jugador (BIO + CAREER)
+                if st.button("📌 Evaluar", key=f"eval_{box['name']}_T_{numero}_{nombre}"):
+                    # 1) Scrape del perfil del jugador CON FEEDBACK VISUAL
                     bio_data = {}
-                    try:
-                        if url:
-                            data = scrape_player_full(url, debug=True)  # trae {'bio':..., 'career':...}
-                            bio_data = data.get("bio", {}) or {}
-                            # 2) (Opcional pero recomendable) Persistir en BBDD para tener foto/trayectoria ya guardada
+                    if url:
+                        with st.spinner(f"📡 Obteniendo datos de {nombre}..."):
                             try:
-                                if url:
-                                    # NO pasar player_id para que use la lógica de upsert normal
+                                data = scrape_player_full(url, debug=True)
+                                bio_data = data.get("bio", {}) or {}
+                                
+                                if bio_data:
+                                    st.success(f"✅ Datos obtenidos: {bio_data.get('name', nombre)}")
+                                else:
+                                    st.warning("⚠️ No se pudieron obtener datos adicionales")
+                                
+                                # 2) Persistir en BBDD para tener foto/trayectoria ya guardada
+                                try:
                                     sync_player_to_db(db, url, player_id=None, debug=True)
+                                except Exception as e:
+                                    st.warning(f"Error guardando en BD: {e}")
+                                    
                             except Exception as e:
-                                print("[EVAL] sync_player_to_db falló:", e)
-                    except Exception as e:
-                        print("[EVAL] scrape_player_full falló:", e)
+                                st.error(f"Error obteniendo datos: {e}")
+                                bio_data = {}
 
                     # 3) Prefills a sesión para 3_Informes
                     st.session_state["prefill_name"]        = bio_data.get("name") or nombre

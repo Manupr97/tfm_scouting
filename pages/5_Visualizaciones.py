@@ -13,6 +13,10 @@ import matplotlib as mpl
 from datetime import datetime
 import matplotlib.patheffects as pe
 from matplotlib.patches import Patch
+import hashlib
+from utils.styles import inject_global_styles, COLORS, create_kpi_card
+
+inject_global_styles()
 
 # === Tema oscuro global para Matplotlib ===
 BG     = "#0f1116"   # fondo app
@@ -43,15 +47,44 @@ plt.style.use('dark_background')
 # ===== Config =====
 st.set_page_config(page_title="Visualizaciones", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 
-# ===== Estilos discretos =====
-st.markdown("""
+from utils.styles import inject_global_styles, COLORS, create_kpi_card
+
+inject_global_styles()
+
+# Estilos específicos para visualizaciones
+st.markdown(f"""
 <style>
-:root{ --bg:#0f1116; --card:#12151d; --ink:#e9edf1; --muted:#9aa4b2; --stroke:#232838; --brand:#1f7aec; }
-.stApp{ background:var(--bg); color:var(--ink); }
-.block-container{ padding-top: 1rem; }
-.card{ background:var(--card); border:1px solid var(--stroke); border-radius:14px; padding:16px; }
-.kpi{ background:#121922; border:1px solid var(--stroke); border-radius:14px; padding:14px; }
-hr{ border:none; border-top:1px solid var(--stroke); margin: 8px 0 16px; }
+/* Plotly dark theme */
+.js-plotly-plot .plotly .modebar {{
+    background: var(--card) !important;
+}}
+
+.js-plotly-plot .plotly .bg {{
+    fill: var(--bg) !important;
+}}
+
+/* Métricas específicas para viz */
+.viz-metric {{
+    background: linear-gradient(135deg, var(--card) 0%, #1a1f2e 100%);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    text-align: center;
+    margin-bottom: 0.5rem;
+}}
+
+.viz-metric-value {{
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--primary);
+    margin: 0;
+}}
+
+.viz-metric-label {{
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,10 +125,26 @@ def guess_columns(df: pd.DataFrame) -> dict:
         "competition": "competicion" if "competicion" in df.columns else None
     }
 
-@st.cache_data(show_spinner=False)
-def load_all_excels(data_dir: str) -> tuple[pd.DataFrame, dict, dict]:
+@st.cache_data(show_spinner=False, ttl=3600)  # Cache por 1 hora
+def load_all_excels_cached(data_dir: str) -> tuple[pd.DataFrame, dict, dict]:
     # coge cualquier Excel tipo wyscout_*limp*.xlsx
+    # Verificar si hay cambios en archivos
     files = sorted(glob.glob(os.path.join(data_dir, "wyscout_*limp*.xlsx")))
+    if not files:
+        return pd.DataFrame(), {}, {}
+    
+    # Hash basado en modificación de archivos
+    file_info = []
+    for path in files:
+        try:
+            stat = os.stat(path)
+            file_info.append((path, stat.st_mtime, stat.st_size))
+        except:
+            continue
+    
+    # ID único basado en archivos
+    cache_id = hashlib.md5(str(file_info).encode()).hexdigest()[:8]
+
     frames = []
     for path in files:
         try:
@@ -137,7 +186,7 @@ def load_all_excels(data_dir: str) -> tuple[pd.DataFrame, dict, dict]:
     summary["jugadores"] = len(df)
     return df, detected, summary
 
-df, C, S = load_all_excels(DATA_DIR)
+df, C, S = load_all_excels_cached(DATA_DIR)
 if df.empty:
     st.error("No he encontrado Excels limpios en /data (patrón: wyscout_*limp*.xlsx). Súbelos o cambia el loader.")
     st.stop()
@@ -191,10 +240,14 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 k1,k2,k3,k4 = st.columns(4)
-with k1: st.markdown(f"<div class='kpi'><b>👥 Jugadores</b><br>{S.get('jugadores',0):,}</div>", unsafe_allow_html=True)
-with k2: st.markdown(f"<div class='kpi'><b>🏟️ Equipos</b><br>{S.get('equipos','N/A')}</div>", unsafe_allow_html=True)
-with k3: st.markdown(f"<div class='kpi'><b>⚽ Posiciones</b><br>{S.get('posiciones','N/A')}</div>", unsafe_allow_html=True)
-with k4: st.markdown(f"<div class='kpi'><b>📈 Edad media</b><br>{fmt(S.get('edad_media'))} años</div>", unsafe_allow_html=True)
+with k1: 
+    st.markdown(create_kpi_card("👥 Jugadores", f"{S.get('jugadores',0):,}", "Total en dataset"), unsafe_allow_html=True)
+with k2: 
+    st.markdown(create_kpi_card("🏟️ Equipos", f"{S.get('equipos','N/A')}", "Diferentes clubes"), unsafe_allow_html=True)
+with k3: 
+    st.markdown(create_kpi_card("⚽ Posiciones", f"{S.get('posiciones','N/A')}", "Roles cubiertos"), unsafe_allow_html=True)
+with k4: 
+    st.markdown(create_kpi_card("📈 Edad media", f"{fmt(S.get('edad_media'))} años", "Promedio general"), unsafe_allow_html=True)
 
 # ===== Selector de modo (fuera del sidebar) =====
 mode = st.radio("Tipo de análisis", ["🎯 Radar individual","👥 Comparación","📈 Dispersión","🏟️ Por equipo","🔥 Correlaciones"],

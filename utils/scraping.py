@@ -1,10 +1,42 @@
 # utils/scraping.py
 from __future__ import annotations
 import re, datetime as dt
-from typing import Optional, Tuple, List, Dict
-
+from typing import Optional, Tuple, List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
+import time
+from utils.simple_logging import get_logger
+
+# Logger para este módulo
+logger = get_logger("scraping")
+
+# Cache global para requests
+_SCRAPING_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_TTL = 1800  # 30 minutos
+
+def _get_cached_request(url: str) -> Optional[BeautifulSoup]:
+    """Obtiene request cacheado o None si expiró"""
+    if url not in _SCRAPING_CACHE:
+        return None
+    
+    cache_entry = _SCRAPING_CACHE[url]
+    if time.time() - cache_entry['timestamp'] > _CACHE_TTL:
+        del _SCRAPING_CACHE[url]
+        return None
+    
+    return cache_entry['soup']
+
+def _cache_request(url: str, soup: BeautifulSoup) -> None:
+    """Guarda request en cache"""
+    _SCRAPING_CACHE[url] = {
+        'soup': soup,
+        'timestamp': time.time()
+    }
+
+def clear_scraping_cache() -> None:
+    """Limpia cache manualmente"""
+    global _SCRAPING_CACHE
+    _SCRAPING_CACHE = {}
 
 UA = {"User-Agent": "Mozilla/5.0"}
 
@@ -321,12 +353,36 @@ def parse_career_table(soup: BeautifulSoup, debug: bool=False) -> List[Dict]:
     return out
 
 def scrape_player_full(url: str, debug: bool=False) -> Dict:
-    """Devuelve {'bio': {...}, 'career':[...]}"""
-    r = requests.get(url, timeout=15, headers=UA)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "lxml")
+    """Devuelve {'bio': {...}, 'career':[...]} con cache inteligente"""
+    
+    # Verificar cache primero
+    cached_soup = _get_cached_request(url)
+    
+    if cached_soup:
+        logger.info(f"CACHE_HIT: {url}")
+        soup = cached_soup
+    else:
+        logger.info(f"SCRAPING: {url}")
+        
+        try:
+            r = requests.get(url, timeout=15, headers=UA)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "lxml")
+            
+            # Guardar en cache
+            _cache_request(url, soup)
+            
+        except Exception as e:
+            if debug:
+                print(f"[SCRAPER] Error descargando {url}: {e}")
+            return {"bio": {}, "career": []}
+    
     bio = parse_basic_profile(soup, debug=debug)
     career = parse_career_table(soup, debug=debug)
+    
+    # Añadir URL fuente al bio
+    bio["source_url"] = url
+    
     return {"bio": bio, "career": career}
 
 def sync_player_to_db(db, url: str, player_id: int = None, debug: bool=False) -> int:
@@ -355,7 +411,6 @@ def sync_player_to_db(db, url: str, player_id: int = None, debug: bool=False) ->
             position=bio.get("position"),
             nationality=bio.get("nationality"),
             birthdate=bio.get("birthdate"),
-            age=bio.get("age"),
             height_cm=bio.get("height_cm"),
             weight_kg=bio.get("weight_kg"),
             foot=bio.get("foot"),
@@ -374,7 +429,6 @@ def sync_player_to_db(db, url: str, player_id: int = None, debug: bool=False) ->
             position=bio.get("position"),
             nationality=bio.get("nationality"),
             birthdate=bio.get("birthdate"),
-            age=bio.get("age"),
             height_cm=bio.get("height_cm"),
             weight_kg=bio.get("weight_kg"),
             foot=bio.get("foot"),

@@ -4,6 +4,10 @@ import os, pandas as pd
 import streamlit as st
 from models.database import DatabaseManager
 from datetime import date, datetime
+from utils.styles import inject_global_styles, create_kpi_card, create_page_header
+
+
+inject_global_styles()
 
 st.set_page_config(page_title="Perfil de jugador", page_icon="🧾", layout="wide")
 
@@ -44,7 +48,7 @@ if not player_id and "__go_profile_pid" in st.session_state:
     except Exception:
         player_id = None
 
-st.title("🧾 Perfil de jugador")
+create_page_header("🧾 Perfil de jugador", "Datos completos y trayectoria")
 
 # si no llega ID, buscador simple
 if not player_id:
@@ -81,36 +85,16 @@ with c1:
         st.image(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "Escudo CAC.png"),
                  use_container_width=True)
         
-def _calc_age(iso_date: str|None) -> str:
-    if not iso_date:
-        return "-"
-    try:
-        from datetime import date, datetime
-        d = datetime.fromisoformat(iso_date).date()
-        today = date.today()
-        return str(today.year - d.year - ((today.month, today.day) < (d.month, d.day)))
-    except Exception:
-        return "-"
+def _calc_age(birthdate_str: str|None) -> str:
+    """Usa la función centralizada del DatabaseManager"""
+    from models.database import DatabaseManager
+    age = DatabaseManager.calculate_age(birthdate_str)
+    return str(age) if age is not None else "-"
 
 age_txt = _calc_age(p.get("birthdate"))
 
 with c2:
     st.markdown(f"## {p['name']}")
-
-    # Helpers locales
-    from datetime import date, datetime
-
-    def calc_age_from_birthdate(birth: str | None) -> str:
-        if not birth:
-            # fallback a edad guardada si existe
-            return str(p.get("age")) if p.get("age") is not None else "—"
-        try:
-            d = datetime.strptime(birth, "%Y-%m-%d").date()
-            today = date.today()
-            years = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
-            return str(years)
-        except Exception:
-            return str(p.get("age")) if p.get("age") is not None else "—"
 
     def fmt_value_keur(v) -> str:
         # v es miles de euros (K€)
@@ -121,8 +105,6 @@ with c2:
             # Miles con separador (opcional: coma->punto)
             return f"{int(v):,} K€".replace(",", ".")
         return "—"
-
-    age_txt = calc_age_from_birthdate(p.get("birthdate"))
 
     bio_cols = st.columns(4)
     bio_cols[0].markdown(f"**Equipo**: {p.get('team','-')}\n\n**Posición**: {p.get('position','-')}")
@@ -235,25 +217,25 @@ with tab1:
                     with col1:
                         total_pj = general_rows["PJ"].sum() if "PJ" in general_rows.columns else 0
                         total_min = general_rows["Min"].sum() if "Min" in general_rows.columns else 0
-                        st.metric("Partidos jugados", f"{int(total_pj)}")
+                        col1.markdown(create_kpi_card("Partidos jugados", f"{int(total_pj)}", f"{int(total_min):,} min"), unsafe_allow_html=True)
                         st.caption(f"{int(total_min):,} minutos".replace(',', '.'))
                     
                     with col2:
                         total_goles = general_rows["G"].sum() if "G" in general_rows.columns else 0
                         total_asist = general_rows["A"].sum() if "A" in general_rows.columns else 0
-                        st.metric("Goles", f"{int(total_goles)}")
+                        col2.markdown(create_kpi_card("Goles", f"{int(total_goles)}", f"{int(total_asist)} asistencias"), unsafe_allow_html=True) 
                         st.caption(f"{int(total_asist)} asistencias")
                     
                     with col3:
                         total_ta = general_rows["TA"].sum() if "TA" in general_rows.columns else 0
                         total_tr = general_rows["TR"].sum() if "TR" in general_rows.columns else 0
-                        st.metric("Tarjetas amarillas", f"{int(total_ta)}")
+                        col3.markdown(create_kpi_card("Tarjetas", f"{int(total_ta)} TA", f"{int(total_tr)} TR"), unsafe_allow_html=True)
                         st.caption(f"{int(total_tr)} rojas")
                     
                     with col4:
                         if "Pts" in general_rows.columns and general_rows["Pts"].notna().any():
                             avg_pts = general_rows["Pts"].mean()
-                            st.metric("Media puntuación", f"{avg_pts:.1f}")
+                            col4.markdown(create_kpi_card("Puntuación", f"{avg_pts:.1f}", "Media"), unsafe_allow_html=True)
                         
                         if "ELO" in general_rows.columns and general_rows["ELO"].notna().any():
                             current_elo = general_rows["ELO"].iloc[0]  # ELO más reciente
@@ -335,6 +317,12 @@ with tab2:
                 with col2:
                     btn_key = f"edit_from_profile_{r['id']}"
                     if st.button("✏️ Editar", key=btn_key):
+                        # Limpiar estados previos antes de editar
+                        for key in list(st.session_state.keys()):
+                            if key.startswith(("prefill_", "form_", "_bio_", "_career_")):
+                                del st.session_state[key]
+                        
+                        st.query_params.clear()
                         st.query_params["report_id"] = str(r["id"])
                         st.switch_page("pages/3_Informes.py")
                 
@@ -410,8 +398,6 @@ with tab5:
         reports = db.get_reports_by_player(player_id) # ← implementaremos si no existe
     except AttributeError:
         reports = []
-        st.warning("Falta implementar db.get_reports_by_player(player_id). Lo añadimos en el paso 2.")
-
 
     if not reports:
         st.info("Este jugador aún no tiene informes o no se pudieron recuperar.")
@@ -462,7 +448,6 @@ with tab5:
                             "player_id": player_id,
                             "report_id": int(sel_id)
                         }
-                        st.success("Preparado: Generación de PDF individual (implementaremos en el paso 2).")
 
                 with c2:
                     st.download_button(
@@ -501,25 +486,75 @@ with tab5:
 
             if pending["type"] == "single":
                 out_path = os.path.join(out_dir, f"player_{pending['player_id']}_report_{pending['report_id']}.pdf")
-                with st.spinner("Generando PDF del informe individual..."):
-                    try:
-                        pdf_path = build_player_report_pdf(db, pending["player_id"], pending["report_id"], out_path)
-                        with open(pdf_path, "rb") as f:
-                            st.download_button("Descargar PDF (individual)", f.read(), file_name=os.path.basename(pdf_path))
-                        st.success("PDF individual generado.")
-                    except Exception as e:
-                        st.error(f"Error generando PDF individual: {e}")
+                
+                # Crear progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                try:
+                    status_text.text("🔍 Verificando cache...")
+                    progress_bar.progress(20)
+                    
+                    status_text.text("📄 Generando PDF...")
+                    progress_bar.progress(50)
+                    
+                    pdf_path = build_player_report_pdf(db, pending["player_id"], pending["report_id"], out_path)
+                    
+                    progress_bar.progress(80)
+                    status_text.text("💾 Finalizando...")
+                    
+                    progress_bar.progress(100)
+                    status_text.text("✅ PDF generado correctamente")
+                    
+                    # BOTÓN DE DESCARGA
+                    with open(pdf_path, "rb") as f:
+                        st.download_button(
+                            "⬇️ Descargar PDF (individual)", 
+                            f.read(), 
+                            file_name=os.path.basename(pdf_path),
+                            mime="application/pdf"
+                        )
+                    
+                except Exception as e:
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.error(f"Error generando PDF individual: {e}")
 
             elif pending["type"] == "all":
                 out_path = os.path.join(out_dir, f"player_{pending['player_id']}_resumen.pdf")
-                with st.spinner("Generando PDF resumen de todos los informes..."):
-                    try:
-                        pdf_path = build_player_summary_pdf(db, pending["player_id"], out_path, ollama_model="llama3")
-                        with open(pdf_path, "rb") as f:
-                            st.download_button("Descargar PDF (resumen)", f.read(), file_name=os.path.basename(pdf_path))
-                        st.success("PDF resumen generado.")
-                    except Exception as e:
-                        st.error(f"Error generando PDF resumen: {e}")
+                
+                # Progress bar para resumen también
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                try:
+                    status_text.text("🤖 Analizando informes con IA...")
+                    progress_bar.progress(25)
+                    
+                    status_text.text("📊 Generando estadísticas...")
+                    progress_bar.progress(50)
+                    
+                    status_text.text("📄 Creando PDF resumen...")
+                    progress_bar.progress(75)
+                    
+                    pdf_path = build_player_summary_pdf(db, pending["player_id"], out_path, ollama_model="llama3")
+                    
+                    progress_bar.progress(100)
+                    status_text.text("✅ PDF resumen generado")
+                    
+                    # BOTÓN DE DESCARGA
+                    with open(pdf_path, "rb") as f:
+                        st.download_button(
+                            "⬇️ Descargar PDF (resumen)", 
+                            f.read(), 
+                            file_name=os.path.basename(pdf_path),
+                            mime="application/pdf"
+                        )
+                    
+                except Exception as e:
+                    progress_bar.empty()
+                    status_text.empty()
+                    st.error(f"Error generando PDF resumen: {e}")
 
 # Botón para regresar a búsqueda
 st.markdown("---")

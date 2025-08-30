@@ -77,8 +77,16 @@ class BeSoccerScraper:
             
             # Obtener alineaciones
             try:
-                response = self.session.get(url_alineaciones, timeout=10)
+                response = self.session.get(url_alineaciones, timeout=8)  # Timeout más agresivo
                 response.raise_for_status()
+
+                # Verificar que la respuesta tiene contenido útil
+                if len(response.content) < 1000:  # HTML muy pequeño = probable error
+                    return {
+                        'encontrado': False,
+                        'error': 'Respuesta HTML muy pequeña',
+                        'mensaje': 'La página de alineaciones parece incompleta'
+                    }
                 
                 soup = BeautifulSoup(response.content, 'html.parser')
                 

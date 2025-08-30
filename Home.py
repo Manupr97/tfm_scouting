@@ -17,16 +17,16 @@ ejecuta en la raíz del proyecto::
 """
 
 from __future__ import annotations
-
 import base64
 import os
 from pathlib import Path
 import time
-
 import streamlit as st
-
 from utils.auth import authenticate
 
+# Inicializar logging al arrancar la app
+from utils.simple_logging import get_logger
+logger = get_logger("Home")  # ← AÑADIR NOMBRE
 
 # ---------------------------------------------------------------------------
 # Configuración inicial de la página
